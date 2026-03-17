@@ -1,0 +1,131 @@
+# ============================================================================
+# AI Dev Pipeline - Git Ignore Configuration
+# ============================================================================
+
+# ============================================================================
+# Python
+# ============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# ============================================================================
+# Node.js (if examples use JS)
+# ============================================================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.yarn-integrity
+
+# ============================================================================
+# IDE & Editors
+# ============================================================================
+.claude/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+*.sublime-workspace
+*.sublime-project
+
+# ============================================================================
+# OS Files
+# ============================================================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# ============================================================================
+# AI Dev Pipeline - Runtime Files
+# ============================================================================
+
+# Task files (user-generated)
+.harness/tasks/pending/*.json
+.harness/tasks/completed/
+
+# Task index (auto-generated)
+.harness/task-index.json
+
+# CLI sessions
+.harness/cli-io/sessions/
+
+# Logs
+.harness/logs/
+*.log
+
+# Automation state
+.harness/.automation_retries/
+.harness/.automation_skip/
+.harness/.automation_timeouts/
+
+# Artifacts (generated outputs)
+.harness/artifacts/
+
+# Reports
+.harness/reports/
+
+# Environment variables (may contain secrets)
+.harness/.env
+.env
+
+# ============================================================================
+# Project-specific ignores
+# ============================================================================
+
+# Test coverage
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# Backup files
+*.backup
+*.bak
+*.old

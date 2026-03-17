@@ -1,0 +1,340 @@
+{
+  "description": "Harness 任务验收标准示例模板",
+  "version": "1.0",
+
+  "examples": [
+    {
+      "type": "component",
+      "tech_stack": "react",
+      "id": "FE_Component_001",
+      "category": "feature",
+      "complexity": "medium",
+      "description": "创建用户头像组件",
+      "acceptance": [
+        "src/components/UserAvatar/UserAvatar.tsx 存在",
+        "组件包含 src, alt, size props 类型定义",
+        "支持三种尺寸: small (32px), medium (48px), large (64px)",
+        "默认显示占位图（当 src 为空或加载失败时）",
+        "图片懒加载支持",
+        "src/components/UserAvatar/UserAvatar.test.tsx 存在",
+        "测试包含: 正常渲染、尺寸变化、占位图显示",
+        "npm test -- UserAvatar.test.tsx 通过",
+        "npm run lint 通过"
+      ]
+    },
+
+    {
+      "type": "hook",
+      "tech_stack": "react",
+      "id": "FE_Hook_001",
+      "category": "feature",
+      "complexity": "medium",
+      "description": "创建 useLocalStorage Hook",
+      "acceptance": [
+        "src/hooks/useLocalStorage.ts 存在",
+        "Hook 返回类型: [T, (value: T) => void, () => void]",
+        "支持泛型类型定义",
+        "正确处理 JSON 序列化/反序列化",
+        "SSR 安全（服务端渲染时不访问 localStorage）",
+        "处理 localStorage 不可用的情况",
+        "src/hooks/useLocalStorage.test.ts 存在",
+        "测试包含: 读取、写入、删除、类型安全",
+        "npm test -- useLocalStorage.test.ts 通过"
+      ]
+    },
+
+    {
+      "type": "util",
+      "tech_stack": "react",
+      "id": "FE_Util_001",
+      "category": "feature",
+      "complexity": "simple",
+      "description": "创建日期格式化工具函数",
+      "acceptance": [
+        "src/utils/formatDate.ts 存在",
+        "函数签名: formatDate(date: Date | string | number, format?: string): string",
+        "支持常用格式: YYYY-MM-DD, YYYY-MM-DD HH:mm:ss, MM/DD/YYYY",
+        "处理无效日期返回空字符串（不抛出异常）",
+        "支持 Date 对象、时间戳、ISO 字符串输入",
+        "src/utils/formatDate.test.ts 存在",
+        "测试包含: 各种格式、边界情况、无效输入",
+        "npm test -- formatDate.test.ts 通过"
+      ]
+    },
+
+    {
+      "type": "api_integration",
+      "tech_stack": "react",
+      "id": "FE_API_001",
+      "category": "feature",
+      "complexity": "complex",
+      "description": "集成用户列表 API",
+      "acceptance": [
+        "src/services/userService.ts 存在",
+        "包含 getUserList(params), getUserDetail(id), updateUser(id, data) 方法",
+        "使用 axios 或 fetch 发起请求",
+        "请求包含正确的 headers (Content-Type, Authorization)",
+        "正确处理 401, 403, 404, 500 错误响应",
+        "src/types/user.ts 定义 User, UserListParams, UserListResponse 类型",
+        "src/hooks/useUserList.ts 存在（React Query 或 SWR 集成）",
+        "测试覆盖: 成功、失败、Loading 状态",
+        "npm test 通过"
+      ]
+    },
+
+    {
+      "type": "page",
+      "tech_stack": "react",
+      "id": "FE_Page_001",
+      "category": "feature",
+      "complexity": "complex",
+      "description": "创建用户设置页面",
+      "acceptance": [
+        "src/pages/UserSettings.tsx 存在",
+        "包含表单字段: 用户名、邮箱、头像上传",
+        "表单验证: 用户名 3-20 字符、邮箱格式、头像大小限制",
+        "实时验证反馈",
+        "调用 API 保存设置",
+        "成功提示、失败错误信息显示",
+        "响应式布局（移动端友好）",
+        "SEO meta 标签配置",
+        "src/__tests__/UserSettings.test.tsx 存在",
+        "测试包含: 表单交互、验证、API 调用",
+        "npm test 通过"
+      ]
+    },
+
+    {
+      "type": "context",
+      "tech_stack": "react",
+      "id": "FE_Context_001",
+      "category": "feature",
+      "complexity": "medium",
+      "description": "创建主题切换 Context",
+      "acceptance": [
+        "src/contexts/ThemeContext.tsx 存在",
+        "提供 ThemeProvider 组件",
+        "提供 useTheme Hook",
+        "支持 light, dark, system 三种主题",
+        "主题持久化到 localStorage",
+        "支持系统主题变化监听",
+        "src/contexts/ThemeContext.test.tsx 存在",
+        "测试包含: 主题切换、持久化、系统主题同步",
+        "npm test -- ThemeContext.test.tsx 通过"
+      ]
+    },
+
+    {
+      "type": "form",
+      "tech_stack": "react",
+      "id": "FE_Form_001",
+      "category": "feature",
+      "complexity": "medium",
+      "description": "创建登录表单组件",
+      "acceptance": [
+        "src/components/LoginForm/LoginForm.tsx 存在",
+        "字段: 邮箱、密码、记住我复选框",
+        "验证: 邮箱格式、密码长度 >= 6",
+        "错误提示显示在对应字段下方",
+        "提交按钮禁用状态（验证失败或提交中）",
+        "支持键盘提交（Enter 键）",
+        "src/components/LoginForm/LoginForm.test.tsx 存在",
+        "测试包含: 验证、提交、错误处理",
+        "npm test 通过",
+        "npm run lint 通过"
+      ]
+    },
+
+    {
+      "type": "refactor",
+      "tech_stack": "react",
+      "id": "FE_Refactor_001",
+      "category": "refactor",
+      "complexity": "medium",
+      "description": "重构用户列表组件，提取为可复用组件",
+      "acceptance": [
+        "src/components/UserList/UserList.tsx 存在",
+        "从 src/pages/UserListPage.tsx 提取列表逻辑",
+        "支持自定义渲染项（renderItem prop）",
+        "支持加载状态、空状态、错误状态",
+        "支持分页或无限滚动（可选）",
+        "原页面使用重构后的组件",
+        "功能与重构前一致",
+        "src/components/UserList/UserList.test.tsx 存在",
+        "npm test 通过",
+        "无 console warnings"
+      ]
+    }
+  ],
+
+  "vue_examples": [
+    {
+      "type": "component",
+      "tech_stack": "vue",
+      "id": "FE_Vue_Component_001",
+      "category": "feature",
+      "complexity": "medium",
+      "description": "创建用户头像组件",
+      "acceptance": [
+        "src/components/UserAvatar.vue 存在",
+        "使用 Composition API (script setup)",
+        "Props: src, alt, size (支持 small/medium/large)",
+        "默认显示占位图",
+        "src/components/__tests__/UserAvatar.test.ts 存在",
+        "npm test -- UserAvatar.test.ts 通过"
+      ]
+    }
+  ],
+
+  "laravel_examples": [
+    {
+      "type": "controller",
+      "tech_stack": "laravel",
+      "id": "SIM_API_001",
+      "category": "feature",
+      "complexity": "medium",
+      "description": "创建用户列表接口",
+      "acceptance": [
+        "app/Http/Controllers/Api/App/UserController.php 存在",
+        "包含 index 方法",
+        "使用 UserListRequest 进行参数验证",
+        "使用 UserResource 格式化输出",
+        "支持分页（默认 15 条/页）",
+        "支持搜索和排序",
+        "routes/api.php 已注册路由 GET /api/v1/app/users",
+        "tests/Feature/Api/App/UserListTest.php 存在",
+        "测试包含: 成功、验证失败、分页",
+        "php artisan test -- UserListTest.php 通过"
+      ]
+    },
+
+    {
+      "type": "migration",
+      "tech_stack": "laravel",
+      "id": "SIM_DB_001",
+      "category": "migration",
+      "complexity": "simple",
+      "description": "创建用户地址表迁移",
+      "acceptance": [
+        "database/migrations/*_create_user_addresses_table.php 存在",
+        "包含字段: id, user_id, province, city, detail, is_default, timestamps",
+        "user_id 外键约束正确",
+        "is_default 默认值 false",
+        "索引: user_id, (user_id, is_default)",
+        "down 方法正确删除表",
+        "php artisan migrate --pretend 不报错",
+        "迁移文件语法检查通过"
+      ]
+    },
+
+    {
+      "type": "model",
+      "tech_stack": "laravel",
+      "id": "SIM_Model_001",
+      "category": "model",
+      "complexity": "medium",
+      "description": "创建 UserAddress 模型",
+      "acceptance": [
+        "app/Models/UserAddress.php 存在",
+        "定义 fillable: user_id, province, city, detail, is_default",
+        "定义 belongsTo User 关联",
+        "定义 casts: is_default => boolean",
+        "包含作用域: defaultAddress(), byProvince($province)",
+        "tests/Unit/Models/UserAddressTest.php 存在",
+        "php artisan test -- UserAddressTest.php 通过"
+      ]
+    },
+
+    {
+      "type": "service",
+      "tech_stack": "laravel",
+      "id": "SIM_Service_001",
+      "category": "feature",
+      "complexity": "complex",
+      "description": "创建订单处理服务",
+      "acceptance": [
+        "app/Services/OrderService.php 存在",
+        "包含 createOrder, cancelOrder, getOrderStatus 方法",
+        "使用数据库事务保证一致性",
+        "正确处理异常和回滚",
+        "发送订单创建事件",
+        "tests/Unit/Services/OrderServiceTest.php 存在",
+        "测试包含: 成功创建、库存不足、取消订单、并发场景",
+        "php artisan test -- OrderServiceTest.php 通过"
+      ]
+    }
+  ],
+
+  "nextjs_examples": [
+    {
+      "type": "page",
+      "tech_stack": "nextjs",
+      "id": "FE_Next_Page_001",
+      "category": "feature",
+      "complexity": "medium",
+      "description": "创建用户个人主页",
+      "acceptance": [
+        "src/app/users/[id]/page.tsx 存在",
+        "使用 Server Component 获取用户数据",
+        "动态路由参数正确处理",
+        "处理用户不存在的情况（404）",
+        "SEO 友好（metadata 配置）",
+        "响应式布局",
+        "测试文件存在并通过"
+      ]
+    },
+
+    {
+      "type": "api_route",
+      "tech_stack": "nextjs",
+      "id": "FE_Next_API_001",
+      "category": "feature",
+      "complexity": "simple",
+      "description": "创建用户搜索 API 路由",
+      "acceptance": [
+        "src/app/api/users/search/route.ts 存在",
+        "支持 GET 请求，query 参数: q, limit",
+        "参数验证正确",
+        "返回 JSON 格式数据",
+        "错误处理完整",
+        "测试文件存在并通过"
+      ]
+    }
+  ],
+
+  "usage_guide": {
+    "description": "如何使用这些示例创建任务",
+    "methods": [
+      {
+        "method": "手动创建",
+        "steps": [
+          "1. 从 examples 中找到匹配的任务类型",
+          "2. 复制 acceptance 数组",
+          "3. 根据实际情况修改文件路径和验证项",
+          "4. 使用 add_task.py 创建任务"
+        ],
+        "example": "python3 .harness/scripts/add_task.py --id FE_Component_002 --desc '创建按钮组件' --acceptance 'src/components/Button/Button.tsx 存在' '支持 variant prop' 'npm test 通过'"
+      },
+      {
+        "method": "模板创建（未来实现）",
+        "steps": [
+          "1. 指定 --template 参数",
+          "2. 系统自动填充验收标准",
+          "3. 用户微调具体内容"
+        ],
+        "example": "python3 .harness/scripts/add_task.py --template component --id FE_Component_002 --desc '创建按钮组件'"
+      }
+    ]
+  },
+
+  "customization": {
+    "description": "如何自定义验收标准",
+    "tips": [
+      "验收标准应该具体、可验证、可测试",
+      "使用明确的文件路径（相对于项目根目录）",
+      "包含功能验证、测试验证、代码质量验证",
+      "避免模糊的描述，如'代码质量好' → 改为'npm run lint 通过'",
+      "验收标准数量建议 5-10 条，不要过多"
+    ]
+  }
+}
