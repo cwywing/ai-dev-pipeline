@@ -340,9 +340,38 @@ Modify this file to customize system behavior.
 │   └── progress.md              # Development progress
 │
 ├── cli-io/                      # CLI session management
+│   └── current.json             # Active session state (auto-managed)
 ├── artifacts/                   # Task artifacts
 └── reports/                     # Execution reports
 ```
+
+### CLI Session State (cli-io/)
+
+The `current.json` tracks the active Claude CLI session:
+
+```json
+{
+  "session_id": "20260320_143345_81752",
+  "task_id": "SIM_Arch_Status_Enum_104",
+  "stage": "review",
+  "start_time": "2026-03-20T14:33:45.224614",
+  "end_time": "2026-03-20T14:35:27.479767",
+  "exit_code": 0,
+  "completed": true,
+  "active": false
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `session_id` | string | Unique session identifier (YYYYMMDD_HHMMSS_NNNNN) |
+| `task_id` | string | Current task being executed |
+| `stage` | string | Current stage: `dev`, `test`, `review`, or `validation` |
+| `start_time` | string | ISO 8601 timestamp when session started |
+| `end_time` | string | ISO 8601 timestamp when session ended (if completed) |
+| `exit_code` | number | Process exit code (0 = success) |
+| `completed` | boolean | Whether the session completed successfully |
+| `active` | boolean | Whether the session is currently active |
 
 ---
 
