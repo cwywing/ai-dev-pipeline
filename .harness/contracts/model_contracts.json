@@ -1,0 +1,106 @@
+{
+  "version": "1.0.0",
+  "updated_at": "2026-03-18T12:00:00+08:00",
+  "description": "Model层数据契约",
+
+  "models": {
+    "User": {
+      "file": "app/Models/User.php",
+      "table": "users",
+      "required_fields": ["id", "openid", "balance"],
+      "relationships": {
+        "orders": "hasMany(Order::class)",
+        "addresses": "hasMany(Address::class)",
+        "withdraws": "hasMany(Withdraw::class)",
+        "balanceLogs": "hasMany(UserBalanceLog::class)"
+      },
+      "scopes": ["active", "byPlatform"],
+      "accessors": ["balance_display", "phone_hidden"],
+      "methods": ["canWithdraw(amount)"]
+    },
+
+    "Order": {
+      "file": "app/Models/Order.php",
+      "table": "orders",
+      "required_fields": ["id", "order_no", "user_id", "status"],
+      "relationships": {
+        "user": "belongsTo(User::class)",
+        "address": "belongsTo(Address::class)",
+        "category": "belongsTo(Category::class)",
+        "logs": "hasMany(OrderLog::class)",
+        "shareLogs": "hasMany(ShareLog::class)"
+      },
+      "scopes": ["byUser", "byStatus", "pending", "recent"],
+      "accessors": ["status_text", "estimated_amount_display"],
+      "methods": ["generateOrderNo()", "canCancel()"],
+      "state_machine": {
+        "initial": "pending",
+        "transitions": {
+          "pending": ["approved", "cancelled"],
+          "approved": ["pickup_scheduled", "cancelled"],
+          "pickup_scheduled": ["picked_up", "cancelled"],
+          "picked_up": ["settling"],
+          "settling": ["completed"],
+          "completed": [],
+          "cancelled": []
+        }
+      }
+    },
+
+    "Address": {
+      "file": "app/Models/Address.php",
+      "table": "addresses",
+      "required_fields": ["id", "user_id", "name", "phone", "province", "city", "district", "detail"],
+      "relationships": {
+        "user": "belongsTo(User::class)",
+        "orders": "hasMany(Order::class)"
+      },
+      "scopes": ["byUser", "default"],
+      "accessors": ["full_address", "is_default_text"]
+    },
+
+    "Withdraw": {
+      "file": "app/Models/Withdraw.php",
+      "table": "withdraws",
+      "required_fields": ["id", "withdraw_no", "user_id", "amount", "status", "account_type"],
+      "relationships": {
+        "user": "belongsTo(User::class)"
+      },
+      "scopes": ["byUser", "byStatus", "pending"],
+      "methods": ["generateWithdrawNo()"]
+    },
+
+    "Category": {
+      "file": "app/Models/Category.php",
+      "table": "categories",
+      "required_fields": ["id", "name", "base_price", "is_active", "sort_order"],
+      "relationships": {
+        "orders": "hasMany(Order::class)"
+      },
+      "scopes": ["active", "ordered"],
+      "accessors": ["is_active_text", "price_display"]
+    },
+
+    "Admin": {
+      "file": "app/Models/Admin.php",
+      "table": "admins",
+      "required_fields": ["id", "username", "is_active"],
+      "scopes": ["active"]
+    },
+
+    "Config": {
+      "file": "app/Models/Config.php",
+      "table": "configs",
+      "required_fields": ["id", "key", "value", "group"],
+      "scopes": ["byGroup"],
+      "accessors": ["typed_value"]
+    }
+  },
+
+  "validation_rules": {
+    "order_no": "unique, 32 chars, format: DDYYMMDDHHMMSS + random",
+    "withdraw_no": "unique, 32 chars, format: WDYYMMDDHHMMSS + random",
+    "phone": "11 digits, starts with 1",
+    "amount": "decimal(10,2), >= 0"
+  }
+}

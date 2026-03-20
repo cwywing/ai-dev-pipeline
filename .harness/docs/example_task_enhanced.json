@@ -1,0 +1,343 @@
+{
+  "id": "SIM_API_Order_011_Enhanced",
+  "category": "controller",
+  "priority": "P0",
+  "complexity": "complex",
+  "description": "实现订单管理接口（增强版示例）",
+
+  "depends_on": {
+    "required": [
+      {
+        "task_id": "SIM_DB_002",
+        "stage": "dev",
+        "reason": "需要orders表及相关表结构"
+      },
+      {
+        "task_id": "SIM_Model_003",
+        "stage": "dev",
+        "reason": "需要Order、Address、Category模型"
+      },
+      {
+        "task_id": "SIM_Arch_004",
+        "stage": "dev",
+        "reason": "需要BaseService和ApiResponse trait"
+      }
+    ],
+    "optional": [
+      {
+        "task_id": "SIM_SF_007",
+        "reason": "顺丰API用于后续物流跟踪功能"
+      }
+    ],
+    "runtime": [
+      {
+        "task_id": "SIM_Data_023",
+        "reason": "测试需要种子数据"
+      }
+    ]
+  },
+
+  "context": {
+    "input_context": {
+      "from_dependencies": {
+        "SIM_DB_002": {
+          "received": {
+            "migrations": ["orders", "order_logs", "share_logs"],
+            "schema_decisions": [
+              "订单使用软删除",
+              "订单状态用枚举类型",
+              "金额字段用decimal(10,2)"
+            ]
+          }
+        },
+        "SIM_Model_003": {
+          "received": {
+            "models": ["Order", "OrderLog", "ShareLog"],
+            "relationships": [
+              "Order belongsTo User",
+              "Order hasMany OrderLog",
+              "Order hasMany ShareLog"
+            ],
+            "accessors": [
+              "Order::status_text",
+              "Order::estimated_amount_display"
+            ]
+          }
+        }
+      }
+    },
+
+    "decisions": [
+      {
+        "decision": "订单提交使用事务包裹",
+        "reason": "创建订单、记录日志、更新统计需要原子性",
+        "alternatives": ["不用事务", "使用DB::transaction闭包"],
+        "impact": [
+          "任一步骤失败会回滚",
+          "需要注意事务内的异常处理"
+        ],
+        "made_by": "dev_agent",
+        "made_at": "2026-03-17T17:00:00"
+      },
+      {
+        "decision": "订单号格式: DD + YYMMDDHHMMSS + 6位随机",
+        "reason": "保证唯一性同时可读",
+        "alternatives": ["UUID", "雪花算法ID", "纯数字递增"],
+        "impact": [
+          "最多支持每秒100万订单",
+          "可通过订单号判断创建时间"
+        ],
+        "made_by": "dev_agent",
+        "made_at": "2026-03-17T17:05:00"
+      },
+      {
+        "decision": "用户只能查看和操作自己的订单",
+        "reason": "数据安全和隐私保护",
+        "alternatives": ["允许管理员查看所有订单"],
+        "impact": [
+          "需要中间件验证用户身份",
+          "查询需要加user_id条件"
+        ],
+        "made_by": "dev_agent",
+        "made_at": "2026-03-17T17:10:00"
+      }
+    ],
+
+    "implementation_notes": [
+      "OrderService::submit() 是核心方法，包含完整业务逻辑",
+      "订单创建后自动记录 OrderLog",
+      "预估金额基于品类基础价格计算",
+      "取件时间必须大于当前时间24小时"
+    ],
+
+    "gotchas": [
+      "⚠️ 创建订单时必须设置初始状态为 'pending'",
+      "⚠️ 订单取消后不能恢复",
+      "⚠️ 地址被删除后，历史订单仍可查看地址快照",
+      "⚠️ 计算金额时使用 bcmath 扩展避免精度问题"
+    ]
+  },
+
+  "contracts": {
+    "implements": ["api_standards", "model_contracts"],
+
+    "endpoints": [
+      {
+        "method": "POST",
+        "path": "/api/v1/app/order/submit",
+        "description": "提交回收订单",
+
+        "request": {
+          "headers": {
+            "Authorization": "Bearer {token}",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "address_id": "required|integer|exists:addresses,id",
+            "category_ids": "required|array|min:1",
+            "category_ids.*": "integer|exists:categories,id",
+            "remark": "nullable|string|max:500",
+            "booking_time": "required|date|after:+24 hours"
+          }
+        },
+
+        "responses": {
+          "200": {
+            "description": "提交成功",
+            "body": {
+              "code": 0,
+              "message": "订单提交成功",
+              "data": {
+                "order_no": "DD260317123456789012",
+                "status": "pending",
+                "status_text": "待审核",
+                "estimated_amount": "25.00",
+                "created_at": "2026-03-17T12:34:56+08:00"
+              }
+            }
+          },
+          "401": {
+            "description": "未认证",
+            "body": {
+              "code": 401,
+              "message": "请先登录"
+            }
+          },
+          "422": {
+            "description": "验证失败",
+            "body": {
+              "code": 422,
+              "message": "验证失败",
+              "errors": {
+                "address_id": ["地址不存在"],
+                "booking_time": ["取件时间必须至少24小时后"]
+              }
+            }
+          }
+        }
+      },
+
+      {
+        "method": "GET",
+        "path": "/api/v1/app/order/list",
+        "description": "订单列表",
+
+        "request": {
+          "headers": {
+            "Authorization": "Bearer {token}"
+          },
+          "query": {
+            "status": "nullable|string|in:pending,approved,completed,cancelled",
+            "page": "nullable|integer|min:1",
+            "per_page": "nullable|integer|min:1|max:50"
+          }
+        },
+
+        "responses": {
+          "200": {
+            "description": "成功",
+            "body": {
+              "code": 0,
+              "message": "success",
+              "data": {
+                "list": [
+                  {
+                    "order_no": "DD260317123456789012",
+                    "status": "pending",
+                    "status_text": "待审核",
+                    "estimated_amount": "25.00",
+                    "created_at": "2026-03-17T12:34:56+08:00"
+                  }
+                ],
+                "pagination": {
+                  "current_page": 1,
+                  "per_page": 15,
+                  "total": 10,
+                  "last_page": 1,
+                  "has_more_pages": false
+                }
+              }
+            }
+          }
+        }
+      },
+
+      {
+        "method": "GET",
+        "path": "/api/v1/app/order/{id}",
+        "description": "订单详情",
+
+        "request": {
+          "headers": {
+            "Authorization": "Bearer {token}"
+          },
+          "path_params": {
+            "id": "required|integer"
+          }
+        },
+
+        "responses": {
+          "200": {
+            "description": "成功",
+            "body": {
+              "code": 0,
+              "message": "success",
+              "data": {
+                "order_no": "DD260317123456789012",
+                "status": "pending",
+                "status_text": "待审核",
+                "estimated_amount": "25.00",
+                "actual_amount": null,
+                "address": {
+                  "name": "张三",
+                  "phone": "138****8888",
+                  "full_address": "广东省深圳市南山区科技园"
+                },
+                "categories": [
+                  {"name": "旧衣服", "weight": null, "price": "5.00/kg"}
+                ],
+                "created_at": "2026-03-17T12:34:56+08:00"
+              }
+            }
+          },
+          "404": {
+            "description": "订单不存在",
+            "body": {
+              "code": 404,
+              "message": "订单不存在"
+            }
+          }
+        }
+      },
+
+      {
+        "method": "POST",
+        "path": "/api/v1/app/order/{id}/cancel",
+        "description": "取消订单",
+
+        "request": {
+          "headers": {
+            "Authorization": "Bearer {token}"
+          },
+          "path_params": {
+            "id": "required|integer"
+          }
+        },
+
+        "responses": {
+          "200": {
+            "description": "取消成功",
+            "body": {
+              "code": 0,
+              "message": "订单已取消"
+            }
+          },
+          "400": {
+            "description": "状态不允许取消",
+            "body": {
+              "code": "ORDER_002",
+              "message": "当前订单状态不允许取消"
+            }
+          }
+        }
+      }
+    ]
+  },
+
+  "acceptance": [
+    "app/Http/Controllers/Api/App/OrderController.php 存在",
+    "app/Http/Requests/SubmitOrderRequest.php 存在",
+    "app/Services/OrderService.php 存在",
+    "app/Http/Resources/OrderResource.php 存在",
+    "routes/api.php 包含订单相关路由",
+    "php artisan test --filter OrderController 所有测试通过",
+    "接口返回格式符合 api_standards 契约"
+  ],
+
+  "validation": {
+    "enabled": true,
+    "threshold": 0.9,
+    "max_retries": 3
+  },
+
+  "stages": {
+    "dev": {
+      "completed": false,
+      "completed_at": null,
+      "issues": [],
+      "artifacts": []
+    },
+    "test": {
+      "completed": false,
+      "completed_at": null,
+      "issues": [],
+      "test_results": {}
+    },
+    "review": {
+      "completed": false,
+      "completed_at": null,
+      "issues": [],
+      "risk_level": null
+    }
+  }
+}

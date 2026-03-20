@@ -1,0 +1,160 @@
+{
+  "version": "1.0.0",
+  "updated_at": "2026-03-18T12:00:00+08:00",
+  "description": "SIM-Laravel API 全局契约规范",
+
+  "response_format": {
+    "success": {
+      "description": "成功响应格式",
+      "structure": {
+        "code": 0,
+        "message": "success",
+        "data": {}
+      },
+      "example": {
+        "code": 0,
+        "message": "操作成功",
+        "data": {
+          "id": 1,
+          "name": "示例"
+        }
+      }
+    },
+
+    "error": {
+      "description": "错误响应格式",
+      "structure": {
+        "code": "int > 0",
+        "message": "string",
+        "errors": "optional|array"
+      },
+      "example": {
+        "code": 400,
+        "message": "请求参数错误",
+        "errors": {
+          "name": ["名称不能为空"]
+        }
+      }
+    },
+
+    "pagination": {
+      "description": "分页响应格式",
+      "structure": {
+        "code": 0,
+        "message": "success",
+        "data": {
+          "list": "array",
+          "pagination": {
+            "current_page": "int",
+            "per_page": "int",
+            "total": "int",
+            "last_page": "int",
+            "has_more_pages": "bool"
+          }
+        }
+      },
+      "example": {
+        "code": 0,
+        "message": "success",
+        "data": {
+          "list": [
+            {"id": 1, "name": "项目1"}
+          ],
+          "pagination": {
+            "current_page": 1,
+            "per_page": 15,
+            "total": 100,
+            "last_page": 7,
+            "has_more_pages": true
+          }
+        }
+      }
+    }
+  },
+
+  "status_codes": {
+    "200": "成功",
+    "201": "创建成功",
+    "400": "请求参数错误",
+    "401": "未认证",
+    "403": "无权限访问",
+    "404": "资源不存在",
+    "422": "验证失败",
+    "429": "请求过于频繁",
+    "500": "服务器内部错误"
+  },
+
+  "error_codes": {
+    "AUTH_001": "登录已过期，请重新登录",
+    "AUTH_002": "无效的认证令牌",
+    "AUTH_003": "账号已被禁用",
+    "USER_001": "用户不存在",
+    "USER_002": "余额不足",
+    "USER_003": "提现金额不满足最小要求",
+    "ORDER_001": "订单不存在",
+    "ORDER_002": "订单状态不允许此操作",
+    "ORDER_003": "订单已取消",
+    "ORDER_004": "地址不存在或不属于当前用户",
+    "ORDER_005": "品类不存在或已下架",
+    "WITHDRAW_001": "提现记录不存在",
+    "WITHDRAW_002": "提现已处理",
+    "VALIDATION_001": "请求参数验证失败"
+  },
+
+  "common_headers": {
+    "request": {
+      "Authorization": "Bearer {token}",
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+      "X-Request-ID": "UUID v4 (optional)"
+    },
+    "response": {
+      "X-Request-ID": "请求追踪ID",
+      "X-RateLimit-Limit": "速率限制上限",
+      "X-RateLimit-Remaining": "剩余请求次数"
+    }
+  },
+
+  "datetime_format": "ISO 8601 (YYYY-MM-DDTHH:mm:ss+00:00)",
+  "price_format": "decimal(10,2) 字符串格式",
+
+  "enums": {
+    "order_status": {
+      "pending": "待审核",
+      "approved": "已审核",
+      "pickup_scheduled": "待取件",
+      "picked_up": "已取件",
+      "settling": "结算中",
+      "completed": "已完成",
+      "cancelled": "已取消"
+    },
+    "withdraw_status": {
+      "pending": "待处理",
+      "processing": "处理中",
+      "success": "成功",
+      "failed": "失败"
+    },
+    "account_type": {
+      "wechat": "微信",
+      "alipay": "支付宝"
+    },
+    "balance_log_type": {
+      "income": "收入",
+      "expense": "支出"
+    }
+  },
+
+  "validation_rules": {
+    "phone": "regex:/^1[3-9]\\d{9}$/",
+    "password": "min:6|max:20",
+    "nickname": "max:50",
+    "remark": "max:500",
+    "amount": "numeric|min:0.01|max:999999.99"
+  },
+
+  "rate_limiting": {
+    "api": "60 requests per minute",
+    "auth": "10 requests per minute",
+    "upload": "20 requests per minute"
+  }
+}

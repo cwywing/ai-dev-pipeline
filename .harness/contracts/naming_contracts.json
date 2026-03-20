@@ -1,0 +1,310 @@
+{
+  "version": "1.0.0",
+  "updated_at": "2026-03-18T00:00:00+08:00",
+  "description": "命名契约：统一命名规范，避免命名混淆",
+
+  "file_naming": {
+    "controller": {
+      "pattern": "{Entity}Controller",
+      "examples": {
+        "correct": ["OrderController.php", "UserController.php", "WithdrawController.php"],
+        "incorrect": ["orderController.php", "OrdersController.php"]
+      },
+      "location": "app/Http/Controllers/Api/{App|Admin|Callback}/",
+      "namespace": "App\\Http\\Controllers\\Api\\{App|Admin|Callback}"
+    },
+    "service": {
+      "pattern": "{Entity}Service",
+      "examples": {
+        "correct": ["OrderService.php", "UserService.php", "BoostService.php"],
+        "incorrect": ["orderService.php", "OrdersService.php"]
+      },
+      "location": "app/Services/",
+      "admin_location": "app/Services/Admin/",
+      "namespace": "App\\Services"
+    },
+    "model": {
+      "pattern": "{Entity} (单数形式)",
+      "examples": {
+        "correct": ["Order.php", "User.php", "Category.php"],
+        "incorrect": ["Orders.php", "order.php"]
+      },
+      "location": "app/Models/",
+      "namespace": "App\\Models"
+    },
+    "request": {
+      "pattern": "{Action}{Entity}Request",
+      "examples": {
+        "correct": ["SubmitOrderRequest.php", "UpdateUserRequest.php", "AuthLoginRequest.php"],
+        "incorrect": ["OrderRequest.php", "orderSubmitRequest.php"]
+      },
+      "location": "app/Http/Requests/",
+      "namespace": "App\\Http\\Requests"
+    },
+    "resource": {
+      "pattern": "{Entity}Resource",
+      "examples": {
+        "correct": ["OrderResource.php", "UserResource.php", "WithdrawResource.php"],
+        "incorrect": ["orderResource.php", "OrdersResource.php"]
+      },
+      "location": "app/Http/Resources/",
+      "namespace": "App\\Http\\Resources"
+    },
+    "migration": {
+      "pattern": "{date}_create_{table}_table.php",
+      "examples": {
+        "correct": ["2024_01_01_000001_create_orders_table.php"],
+        "incorrect": ["create_orders_table.php"]
+      },
+      "location": "database/migrations/"
+    },
+    "job": {
+      "pattern": "{Action}Job",
+      "examples": {
+        "correct": ["ProcessWithdrawJob.php", "SendNotificationJob.php"],
+        "incorrect": ["withdrawJob.php", "ProcessWithdraw.php"]
+      },
+      "location": "app/Jobs/"
+    },
+    "test": {
+      "pattern": "{Entity}Test",
+      "examples": {
+        "correct": ["OrderTest.php", "UserControllerTest.php"],
+        "incorrect": ["orderTest.php", "OrdersTest.php"]
+      },
+      "location": "tests/Feature/ 或 tests/Unit/"
+    }
+  },
+
+  "method_naming": {
+    "controller": {
+      "list": {
+        "pattern": "list()",
+        "examples": ["list()", "getUserList()"],
+        "incorrect": ["index()", "getList()"]
+      },
+      "detail": {
+        "pattern": "detail()",
+        "examples": ["detail()", "getOrderDetail()"],
+        "incorrect": ["show()", "getDetail()"]
+      },
+      "create": {
+        "pattern": "submit() | store() | create()",
+        "examples": ["submit()", "submitOrder()", "createUser()"],
+        "incorrect": ["add()", "post()"]
+      },
+      "update": {
+        "pattern": "update{Field}()",
+        "examples": ["updateStatus()", "updateProfile()"],
+        "incorrect": ["edit()", "modify()"]
+      },
+      "delete": {
+        "pattern": "delete() | destroy()",
+        "examples": ["delete()", "deleteAddress()"],
+        "incorrect": ["remove()", "del()"]
+      },
+      "approve": {
+        "pattern": "approve() | audit()",
+        "examples": ["approve()", "audit()"],
+        "incorrect": ["pass()", "confirm()"]
+      }
+    },
+    "service": {
+      "get_list": {
+        "pattern": "get{Entity}List()",
+        "examples": ["getOrderList()", "getUserList()"],
+        "incorrect": ["list()", "all()"]
+      },
+      "get_detail": {
+        "pattern": "get{Entity}Detail() | get{Entity}()",
+        "examples": ["getOrderDetail()", "getUser()"],
+        "incorrect": ["find()", "get()"]
+      },
+      "create": {
+        "pattern": "create{Entity}() | submit{Entity}()",
+        "examples": ["createOrder()", "submitOrder()"],
+        "incorrect": ["add()", "new()"]
+      },
+      "update": {
+        "pattern": "update{Entity}()",
+        "examples": ["updateUser()", "updateStatus()"],
+        "incorrect": ["edit()", "modify()"]
+      },
+      "delete": {
+        "pattern": "delete{Entity}()",
+        "examples": ["deleteAddress()"],
+        "incorrect": ["remove()", "del()"]
+      },
+      "check": {
+        "pattern": "check{Condition}() | is{State}() | has{Feature}() | can{Action}()",
+        "examples": ["checkPermission()", "isActive()", "hasPermission()", "canCancel()"],
+        "incorrect": ["validate()", "verify()"]
+      },
+      "process": {
+        "pattern": "process{Action}() | handle{Event}()",
+        "examples": ["processWithdraw()", "handleCallback()"],
+        "incorrect": ["do()", "run()"]
+      }
+    },
+    "model_accessor": {
+      "pattern": "get{FieldName}Attribute()",
+      "examples": {
+        "correct": ["getStatusNameAttribute()", "getFullAddressAttribute()"],
+        "incorrect": ["statusName()", "get_status_name()"]
+      }
+    },
+    "model_scope": {
+      "pattern": "scope{Name}()",
+      "examples": {
+        "correct": ["scopeActive()", "scopeByUser()", "scopePending()"],
+        "incorrect": ["active()", "queryActive()"]
+      }
+    }
+  },
+
+  "variable_naming": {
+    "style": "camelCase",
+    "rules": [
+      {
+        "category": "布尔变量",
+        "pattern": "is/has/can + 形容词/名词",
+        "examples": {
+          "correct": ["$isBoosted", "$hasPermission", "$canCancel", "$isActive"],
+          "incorrect": ["$boosted", "$permission", "$cancelable"]
+        }
+      },
+      {
+        "category": "集合变量",
+        "pattern": "复数形式",
+        "examples": {
+          "correct": ["$orders", "$users", "$addresses"],
+          "incorrect": ["$order", "$userList", "$addressArr"]
+        }
+      },
+      {
+        "category": "单个模型",
+        "pattern": "单数形式",
+        "examples": {
+          "correct": ["$order", "$user", "$address"],
+          "incorrect": ["$orderModel", "$userObj", "$addressItem"]
+        }
+      },
+      {
+        "category": "ID变量",
+        "pattern": "实体名 + Id (camelCase)",
+        "examples": {
+          "correct": ["$orderId", "$userId", "$categoryId"],
+          "incorrect": ["$order_id", "$id", "$oid"]
+        }
+      },
+      {
+        "category": "计数量",
+        "pattern": "实体名 + Count",
+        "examples": {
+          "correct": ["$orderCount", "$userCount"],
+          "incorrect": ["$count", "$total", "$num"]
+        }
+      }
+    ]
+  },
+
+  "database_naming": {
+    "table": {
+      "pattern": "{prefix}_{entity_plural}",
+      "examples": {
+        "correct": ["rw_orders", "rw_users", "rw_user_balance_logs"],
+        "incorrect": ["order", "Orders", "rw_order"]
+      },
+      "prefix": "rw_"
+    },
+    "column": {
+      "pattern": "snake_case",
+      "examples": {
+        "correct": ["order_no", "user_id", "created_at", "is_default"],
+        "incorrect": ["orderNo", "userId", "isDefault"]
+      }
+    },
+    "primary_key": {
+      "pattern": "id",
+      "example": "id"
+    },
+    "foreign_key": {
+      "pattern": "{table_singular}_id",
+      "examples": {
+        "correct": ["user_id", "category_id", "order_id"],
+        "incorrect": ["users_id", "uid", "fk_user"]
+      }
+    },
+    "index": {
+      "pattern": "{table}_{column}_index",
+      "examples": {
+        "correct": ["orders_user_id_index", "orders_status_index"],
+        "incorrect": ["idx_user", "user_index"]
+      }
+    },
+    "unique_constraint": {
+      "pattern": "{table}_{columns}_unique",
+      "examples": {
+        "correct": ["orders_order_no_unique", "share_logs_dedup_unique"],
+        "incorrect": ["unique_order", "order_no_unique"]
+      }
+    }
+  },
+
+  "route_naming": {
+    "pattern": "{endpoint}.{entity}.{action}",
+    "examples": {
+      "app_routes": {
+        "correct": ["app.order.list", "app.order.submit", "app.user.info"],
+        "incorrect": ["order.list", "app-order-list", "app.orders"]
+      },
+      "admin_routes": {
+        "correct": ["admin.orders.list", "admin.users.update-status"],
+        "incorrect": ["admin.order.list", "admin_user_update"]
+      },
+      "callback_routes": {
+        "correct": ["callback.sf-express.route-push", "callback.wechat-pay.transfer"],
+        "incorrect": ["sf.route", "callback_sf"]
+      }
+    }
+  },
+
+  "constant_naming": {
+    "pattern": "UPPER_SNAKE_CASE",
+    "examples": {
+      "correct": ["STATUS_PENDING", "PLATFORM_WECHAT", "IS_DEFAULT_YES"],
+      "incorrect": ["statusPending", "status_pending", "PENDING"]
+    },
+    "model_constants": {
+      "pattern": "{CATEGORY}_{VALUE}",
+      "examples": {
+        "status": ["STATUS_PENDING", "STATUS_APPROVED", "STATUS_CANCELLED"],
+        "platform": ["PLATFORM_WECHAT", "PLATFORM_ALIPAY"],
+        "boolean": ["IS_DEFAULT_YES", "IS_DEFAULT_NO", "IS_BOOSTED_YES", "IS_BOOSTED_NO"]
+      }
+    }
+  },
+
+  "naming_mistakes_examples": [
+    {
+      "mistake": "方法名不表意",
+      "incorrect": "public function process($id)",
+      "correct": "public function processWithdraw(int $withdrawId)"
+    },
+    {
+      "mistake": "变量名缩写过度",
+      "incorrect": "$ord = Order::find($id);",
+      "correct": "$order = Order::find($id);"
+    },
+    {
+      "mistake": "单复数混淆",
+      "incorrect": "$orders = Order::find(1);",
+      "correct": "$order = Order::find(1);"
+    },
+    {
+      "mistake": "驼峰下划线混用",
+      "incorrect": "$order_No = 'RW001';",
+      "correct": "$orderNo = 'RW001';"
+    }
+  ]
+}

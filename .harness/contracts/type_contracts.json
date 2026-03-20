@@ -1,0 +1,258 @@
+{
+  "version": "1.0.0",
+  "updated_at": "2026-03-18T00:00:00+08:00",
+  "description": "类型契约：定义类型链，确保OpenAPI、FormRequest、Service类型一致",
+
+  "type_chains": {
+    "platform": {
+      "description": "平台类型（微信/支付宝）",
+      "values": {
+        "wechat": 1,
+        "alipay": 2
+      },
+      "openapi": {
+        "type": "integer",
+        "enum": [1, 2],
+        "description": "平台类型：1-微信，2-支付宝"
+      },
+      "form_request": {
+        "rules": ["required", "integer", "in:1,2"],
+        "messages": {
+          "required": "请选择登录平台",
+          "integer": "平台值必须为整数",
+          "in": "平台值必须是微信(1)或支付宝(2)"
+        }
+      },
+      "service_param": {
+        "type": "int",
+        "php_type": "int",
+        "docblock": "int $platform 平台类型 1-微信 2-支付宝"
+      },
+      "model_cast": "integer",
+      "controller_pattern": "(int) $request->input('platform')",
+      "common_mistakes": [
+        "Controller传string，Service期望int导致条件判断失败",
+        "OpenAPI声明enum['wechat','alipay']但实现是integer"
+      ]
+    },
+
+    "order_status": {
+      "description": "订单状态",
+      "values": {
+        "pending": 0,
+        "in_transit": 1,
+        "pending_settle": 2,
+        "completed": 3,
+        "approved": 4,
+        "pickup_scheduled": 5,
+        "picked_up": 6,
+        "cancelled": -1
+      },
+      "openapi": {
+        "type": "string",
+        "enum": ["pending", "approved", "in_transit", "pending_settle", "completed", "pickup_scheduled", "picked_up", "cancelled"],
+        "description": "订单状态（字符串格式用于API查询）"
+      },
+      "form_request": {
+        "rules": ["nullable", "string", "in:pending,approved,in_transit,pending_settle,completed,pickup_scheduled,picked_up,cancelled"],
+        "notes": "前端传字符串，Service层需转换为整数"
+      },
+      "service_param": {
+        "type": "int",
+        "notes": "Service层和数据库使用整数值",
+        "value_mapping": {
+          "pending": 0,
+          "approved": 4,
+          "in_transit": 1,
+          "pending_settle": 2,
+          "completed": 3,
+          "pickup_scheduled": 5,
+          "picked_up": 6,
+          "cancelled": -1
+        }
+      },
+      "model_cast": "integer",
+      "constants": {
+        "class": "App\\Models\\Order",
+        "prefix": "STATUS_"
+      },
+      "common_mistakes": [
+        "前端传'pending'但数据库查询用字符串而非整数0",
+        "状态筛选未做字符串到整数的映射转换"
+      ]
+    },
+
+    "withdraw_status": {
+      "description": "提现状态",
+      "values": {
+        "pending": 0,
+        "processing": 1,
+        "success": 2,
+        "rejected": -1,
+        "failed": -2
+      },
+      "openapi": {
+        "type": "string",
+        "enum": ["pending", "processing", "success", "rejected", "failed"]
+      },
+      "form_request": {
+        "rules": ["nullable", "string", "in:pending,processing,success,rejected,failed"]
+      },
+      "service_param": {
+        "type": "int",
+        "value_mapping": {
+          "pending": 0,
+          "processing": 1,
+          "success": 2,
+          "rejected": -1,
+          "failed": -2
+        }
+      }
+    },
+
+    "account_type": {
+      "description": "提现账户类型",
+      "values": {
+        "wechat": 1,
+        "alipay": 2
+      },
+      "openapi": {
+        "type": "integer",
+        "enum": [1, 2],
+        "description": "账户类型：1-微信，2-支付宝"
+      },
+      "form_request": {
+        "rules": ["required", "integer", "in:1,2"],
+        "messages": {
+          "required": "请选择提现账户类型",
+          "in": "账户类型必须是微信(1)或支付宝(2)"
+        }
+      },
+      "service_param": {
+        "type": "int"
+      },
+      "model_cast": "integer"
+    },
+
+    "is_boosted": {
+      "description": "是否助力",
+      "values": {
+        "no": 0,
+        "yes": 1
+      },
+      "openapi": {
+        "type": "integer",
+        "enum": [0, 1]
+      },
+      "form_request": {
+        "rules": ["nullable", "integer", "in:0,1"]
+      },
+      "service_param": {
+        "type": "int"
+      },
+      "model_cast": "integer"
+    },
+
+    "is_default": {
+      "description": "是否默认",
+      "values": {
+        "no": 0,
+        "yes": 1
+      },
+      "openapi": {
+        "type": "integer",
+        "enum": [0, 1]
+      },
+      "form_request": {
+        "rules": ["nullable", "integer", "in:0,1"]
+      },
+      "service_param": {
+        "type": "int"
+      },
+      "model_cast": "integer"
+    }
+  },
+
+  "decimal_types": {
+    "amount": {
+      "description": "金额类型",
+      "openapi": {
+        "type": "number",
+        "format": "decimal(10,2)"
+      },
+      "form_request": {
+        "rules": ["required", "numeric", "min:0.01", "max:999999.99"]
+      },
+      "service_param": {
+        "type": "float",
+        "php_type": "float"
+      },
+      "model_cast": "decimal:2"
+    },
+    "weight": {
+      "description": "重量类型",
+      "openapi": {
+        "type": "number",
+        "format": "decimal(8,2)"
+      },
+      "form_request": {
+        "rules": ["nullable", "numeric", "min:0"]
+      },
+      "service_param": {
+        "type": "float"
+      },
+      "model_cast": "decimal:2"
+    },
+    "price": {
+      "description": "价格类型",
+      "openapi": {
+        "type": "number",
+        "format": "decimal(8,2)"
+      },
+      "form_request": {
+        "rules": ["required", "numeric", "min:0"]
+      },
+      "service_param": {
+        "type": "float"
+      },
+      "model_cast": "decimal:2"
+    }
+  },
+
+  "type_validation_rules": [
+    {
+      "rule": "OpenAPI注解类型 = FormRequest验证规则类型",
+      "example": "OpenAPI: integer → FormRequest: integer 规则"
+    },
+    {
+      "rule": "Controller传参类型 = Service方法参数类型",
+      "example": "Controller: (int)$request->input('platform') → Service: int $platform"
+    },
+    {
+      "rule": "Service返回类型 = Resource输入类型",
+      "example": "Service: Order → Resource: OrderResource"
+    },
+    {
+      "rule": "字符串状态需要映射转换为整数",
+      "example": "'pending' → 0, 'approved' → 4"
+    }
+  ],
+
+  "common_type_mistakes": [
+    {
+      "mistake": "Controller传string，Service期望int",
+      "example": "$request->input('platform') 返回 '1' (string)，但 Service 方法签名是 int $platform",
+      "fix": "使用 (int) 强制转换: (int) $request->input('platform')"
+    },
+    {
+      "mistake": "OpenAPI声明类型与实现不符",
+      "example": "OpenAPI: enum['wechat','alipay'] 但实现是 integer in:1,2",
+      "fix": "OpenAPI统一使用: type: integer, enum: [1, 2]"
+    },
+    {
+      "mistake": "状态筛选未做类型转换",
+      "example": "前端传 'pending'，数据库查询 where('status', 'pending') 匹配失败",
+      "fix": "使用状态映射: $statusValue = self::STATUS_MAP[$filters['status']] ?? 0"
+    }
+  ]
+}

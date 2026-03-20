@@ -71,7 +71,7 @@ windows/scripts/__pycache__/
 # ============================================================================
 # 运行时状态文件（不应该提交）
 # ============================================================================
-# CLI IO 状态
+# CLI 状态
 cli-io/current.json
 
 # 任务索引（动态生成）
@@ -81,17 +81,25 @@ task-index.json
 project-config.json
 
 # 任务目录
-tasks/completed/
-tasks/pending/
+tasks/
 
-# 日志目录
-logs/automation/
+# 报告目录
+reports/
 
 # 测试和验证临时文件
 test_route_check.php
 test-reports/
 coverage.xml
 coverage-report/
+
+# 备份文件
+scripts/*.backup
+scripts/*.bak
+*.backup
+*.bak
+
+# API Token
+.api_token
 
 # IDE 和编辑器配置
 .vscode/

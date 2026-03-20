@@ -1,0 +1,206 @@
+{
+  "version": "1.0.0",
+  "updated_at": "2026-03-18T00:00:00+08:00",
+  "description": "安全契约：路由安全、并发安全、回调安全",
+
+  "route_middleware": {
+    "app_authenticated": {
+      "prefix": "/api/v1/app/",
+      "required_middleware": ["auth:sanctum"],
+      "throttle": "throttle:app",
+      "public_routes": [
+        "/home/index",
+        "/booking-days",
+        "/auth/login"
+      ],
+      "rules": [
+        "所有非public_routes必须放在auth:sanctum中间件组内",
+        "认证路由必须检查资源所有权（order.user_id === auth.user.id）",
+        "使用路由组嵌套，避免单独路由遗漏中间件"
+      ],
+      "correct_example": {
+        "code": "Route::middleware('auth:sanctum')->group(function () {\n    Route::post('/order/submit', [OrderController::class, 'submit']);\n    Route::post('/order/{id}/reserve-time', [OrderController::class, 'reserveTime']);\n});"
+      },
+      "incorrect_example": {
+        "code": "// ❌ reserve-time 路由在中间件组外\nRoute::middleware('auth:sanctum')->group(function () {\n    Route::post('/order/submit', [OrderController::class, 'submit']);\n});\nRoute::post('/order/{id}/reserve-time', [OrderController::class, 'reserveTime']); // 无保护！",
+        "issue": "reserve-time路由未被auth:sanctum保护，任何人都可以调用"
+      }
+    },
+
+    "admin_authenticated": {
+      "prefix": "/api/v1/admin/",
+      "required_middleware": ["auth:sanctum", "admin"],
+      "throttle": "throttle:admin",
+      "rules": [
+        "所有Admin端接口必须经过auth:sanctum和admin双重中间件",
+        "敏感操作应记录操作日志"
+      ]
+    },
+
+    "callback_routes": {
+      "prefix": "/api/v1/callback/",
+      "required_verification": [
+        {
+          "type": "ip_whitelist",
+          "description": "IP白名单验证",
+          "config_key": "services.sf.express.callback_ips",
+          "implementation": "if (!in_array($request->ip(), $allowedIPs)) { return response('Unauthorized', 403); }"
+        },
+        {
+          "type": "signature",
+          "description": "签名验证",
+          "implementation": "验证请求签名，确保来源可信"
+        }
+      ],
+      "rules": [
+        "第三方回调必须验证来源（IP白名单或签名）",
+        "禁止直接处理未验证的请求",
+        "返回格式必须符合第三方规范",
+        "回调处理应幂等，防止重复处理"
+      ],
+      "correct_example": {
+        "code": "public function routePush(Request $request)\n{\n    // 1. 验证IP白名单\n    $allowedIPs = config('services.sf.express.callback_ips', []);\n    if (!in_array($request->ip(), $allowedIPs)) {\n        return response('<Response><Head>ERR</Head></Response>', 403);\n    }\n    \n    // 2. 验证签名\n    if (!$this->sfService->verifySignature($request->all())) {\n        return response('<Response><Head>ERR</Head></Response>', 403);\n    }\n    \n    // 3. 处理业务逻辑\n    // ...\n}"
+      },
+      "incorrect_example": {
+        "code": "public function routePush(Request $request)\n{\n    // ❌ 无任何验证，直接处理\n    $xmlStr = $request->input('requestXml');\n    $result = $this->sfService->parseRoutePush($xmlStr);\n    // ...\n}",
+        "issue": "无IP验证、无签名验证，攻击者可伪造请求篡改订单状态"
+      }
+    }
+  },
+
+  "concurrency_safety": {
+    "transaction_rules": {
+      "required_for": [
+        "创建订单（涉及多表写入）",
+        "更新余额（余额+流水+版本）",
+        "提现操作（余额扣减+提现记录）",
+        "状态变更（订单状态+日志）",
+        "结算操作（订单+用户余额+流水+提现）"
+      ],
+      "pattern": "$this->transaction(function () use ($data) {\n    // 所有数据库操作在此执行\n});",
+      "notes": "事务内避免调用外部API，外部API失败会导致事务回滚"
+    },
+
+    "optimistic_lock": {
+      "required_for": [
+        "余额扣减/增加",
+        "库存扣减",
+        "高并发写操作"
+      ],
+      "implementation": {
+        "model_field": "version",
+        "migration": "$table->unsignedInteger('version')->default(0);",
+        "query_pattern": "$affectedRows = User::where('id', $userId)\n    ->where('version', $currentVersion)\n    ->update([\n        'balance' => $newBalance,\n        'version' => $currentVersion + 1,\n    ]);\n\nif ($affectedRows === 0) {\n    throw new ConcurrencyException('数据已被修改，请重试');\n}"
+      },
+      "notes": "乐观锁适用于读多写少场景，冲突时需要重试"
+    },
+
+    "unique_constraints": {
+      "required_for": {
+        "order_no": {
+          "description": "订单号唯一",
+          "migration": "$table->string('order_no')->unique();"
+        },
+        "withdraw_no": {
+          "description": "提现单号唯一",
+          "migration": "$table->string('withdraw_no')->unique();"
+        },
+        "share_dedup": {
+          "description": "助力去重（同一用户只能助力一次）",
+          "migration": "$table->unique(['order_id', 'visitor_openid'], 'share_logs_dedup_unique');"
+        }
+      },
+      "notes": "唯一索引是数据库层面的去重保障，比代码检查更可靠"
+    },
+
+    "lock_for_update": {
+      "required_for": [
+        "先查后改的高并发场景",
+        "结算时锁定订单防止重复结算"
+      ],
+      "pattern": "$order = Order::where('id', $orderId)\n    ->lockForUpdate()\n    ->firstOrFail();",
+      "notes": "SELECT ... FOR UPDATE 在事务内使用，锁定行直到事务提交"
+    }
+  },
+
+  "resource_ownership": {
+    "rules": [
+      "查询时验证user_id匹配当前用户",
+      "更新时验证user_id匹配当前用户",
+      "删除时验证user_id匹配当前用户"
+    ],
+    "implementation_patterns": {
+      "correct": {
+        "service_layer": "$order = Order::query()\n    ->where('id', $orderId)\n    ->where('user_id', $userId)\n    ->firstOrFail();\n\n// 或验证后抛出403\nif ($order->user_id !== $userId) {\n    throw new ForbiddenException('无权访问此资源');\n}"
+      },
+      "incorrect": {
+        "only_id_check": "$order = Order::findOrFail($orderId); // ❌ 未验证user_id\n// 任何人都可以通过ID访问他人订单！",
+        "issue": "ID枚举攻击：攻击者可以遍历ID查看所有订单"
+      }
+    },
+    "error_responses": {
+      "not_found": "返回404（不泄露是否存在）",
+      "forbidden": "返回403 ForbiddenException"
+    }
+  },
+
+  "input_validation": {
+    "rules": [
+      "所有用户输入必须通过FormRequest验证",
+      "禁止在Controller中直接使用request()->input()获取未验证数据",
+      "使用$request->validated()获取验证后的数据",
+      "敏感操作需要二次验证（如支付密码、短信验证码）"
+    ],
+    "sql_injection_prevention": {
+      "correct": [
+        "User::where('id', $id)->first()",
+        "DB::table('users')->where('name', $name)->first()",
+        "使用Eloquent或Query Builder"
+      ],
+      "incorrect": [
+        "DB::select(\"SELECT * FROM users WHERE id = $id\")",
+        "DB::select(\"SELECT * FROM users WHERE name = '$name'\")",
+        "直接拼接SQL字符串"
+      ]
+    },
+    "xss_prevention": {
+      "blade_template": "使用 {{ $var }} 自动转义",
+      "api_response": "使用Resource格式化输出，避免直接输出用户内容"
+    }
+  },
+
+  "security_checklist": [
+    {
+      "category": "路由安全",
+      "items": [
+        "所有需要认证的路由是否在auth:sanctum中间件组内？",
+        "公共路由是否明确列在public_routes中？",
+        "回调路由是否有IP/签名验证？"
+      ]
+    },
+    {
+      "category": "资源所有权",
+      "items": [
+        "查询时是否验证user_id？",
+        "更新时是否验证user_id？",
+        "删除时是否验证user_id？"
+      ]
+    },
+    {
+      "category": "并发安全",
+      "items": [
+        "写操作是否使用事务？",
+        "余额/库存操作是否使用乐观锁？",
+        "唯一性约束是否添加数据库索引？"
+      ]
+    },
+    {
+      "category": "输入验证",
+      "items": [
+        "所有用户输入是否通过FormRequest？",
+        "是否使用$request->validated()？",
+        "SQL是否使用参数绑定？"
+      ]
+    }
+  ]
+}
