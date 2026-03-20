@@ -41,11 +41,23 @@ AI Dev Pipeline (3 stages): **~90%**
 1. **Copy to your project**
 
 ```bash
+# Linux/macOS
 cp -r .harness /path/to/your/project/
+cd /path/to/your/project
+
+# Windows (PowerShell)
+Copy-Item -Recurse .harness /path/to/your/project/
 cd /path/to/your/project
 ```
 
-2. **Initialize the system**
+2. **Configure environment**
+
+```bash
+# Copy environment configuration
+cp .harness/.env.example .harness/.env
+```
+
+3. **Initialize the system**
 
 In Claude Code conversation, say:
 
@@ -73,7 +85,11 @@ python3 .harness/scripts/add_task.py \
 4. **Run automation**
 
 ```bash
+# Linux/macOS
 ./.harness/run-automation.sh
+
+# Windows
+python .harness/windows/run-automation-stages.py
 ```
 
 ---
@@ -307,18 +323,28 @@ Modify this file to customize system behavior.
 ├── task-index.json              # Task index (auto-managed)
 ├── project-config.json          # Project config
 ├── .env                         # Environment config
-├── run-automation.sh            # Automation launcher
+├── .env.example                 # Environment config template
+├── .gitignore                   # Git ignore rules
+├── run-automation.sh            # Automation launcher (Linux/macOS)
 │
 ├── tasks/                       # Task storage
 │   ├── pending/                 # Pending tasks (*.json)
 │   └── completed/YYYY/MM/       # Completed tasks archive
 │
-├── scripts/                     # Automation scripts
+├── scripts/                     # Automation scripts (Linux/macOS)
 │   ├── harness-tools.py         # Core tools (task management)
 │   ├── next_stage.py            # Next stage detection
 │   ├── add_task.py              # Create new tasks
+│   ├── knowledge.py             # Knowledge base management
 │   ├── dual_timeout.py          # Timeout control
 │   └── ...
+│
+├── windows/                     # Windows-specific scripts
+│   ├── run-automation-stages.py # Windows automation launcher
+│   └── scripts/                 # Windows-specific script ports
+│       ├── harness-tools.py
+│       ├── add_task.py
+│       └── ...
 │
 ├── templates/                   # Agent prompt templates
 │   ├── init_prompt.md           # Initialization wizard
@@ -341,6 +367,7 @@ Modify this file to customize system behavior.
 │
 ├── cli-io/                      # CLI session management
 ├── artifacts/                   # Task artifacts
+├── knowledge/                   # Knowledge base (contracts + constraints)
 └── reports/                     # Execution reports
 ```
 
