@@ -93,7 +93,7 @@ rm .harness/task-index.json
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "storage_mode": "single_file",
   "project": "你的项目名称",
   "created_at": "2026-03-17T00:00:00.000000",
@@ -101,9 +101,7 @@ rm .harness/task-index.json
   "total_tasks": 0,
   "pending": 0,
   "completed": 0,
-  "index": {},
-  "modules": {},
-  "priorities": {}
+  "index": {}
 }
 ```
 
@@ -114,7 +112,7 @@ python3 -c "
 import json
 from datetime import datetime
 data = {
-    'version': 1,
+    'version': 2,
     'storage_mode': 'single_file',
     'project': '你的项目名称',
     'created_at': datetime.now().isoformat(),
@@ -122,54 +120,14 @@ data = {
     'total_tasks': 0,
     'pending': 0,
     'completed': 0,
-    'index': {},
-    'modules': {},
-    'priorities': {}
+    'index': {}
 }
 with open('.harness/task-index.json', 'w', encoding='utf-8') as f:
     json.dump(data, f, indent=2, ensure_ascii=False)
 "
 ```
 
-### 步骤7：初始化知识库
-
-**创建知识库目录：**
-
-```bash
-# 创建目录
-mkdir -p .harness/knowledge
-```
-
-**创建接口契约文件 `.harness/knowledge/contracts.json`：**
-
-```json
-{
-  "version": 1,
-  "services": {}
-}
-```
-
-**创建约束条件文件 `.harness/knowledge/constraints.json`：**
-
-```json
-{
-  "version": 1,
-  "global": [],
-  "by_task": {}
-}
-```
-
-或使用命令：
-
-```bash
-# 创建 contracts.json
-echo '{"version": 1, "services": {}}' > .harness/knowledge/contracts.json
-
-# 创建 constraints.json
-echo '{"version": 1, "global": [], "by_task": {}}' > .harness/knowledge/constraints.json
-```
-
-### 步骤8：创建必要目录
+### 步骤6：创建必要目录
 
 ```bash
 # 创建目录结构
@@ -179,7 +137,6 @@ mkdir -p .harness/logs/automation/$(date +%Y/%m)
 mkdir -p .harness/cli-io/sessions
 mkdir -p .harness/artifacts
 mkdir -p .harness/reports
-mkdir -p .harness/knowledge
 ```
 
 ---
@@ -214,8 +171,6 @@ python3 .harness/scripts/harness-tools.py --action list
 - [ ] 已清空 `cli-io/sessions/*` 会话历史
 - [ ] 已清空 `artifacts/*` 产出记录
 - [ ] 已清空 `reports/*` 执行报告
-- [ ] 已创建 `knowledge/contracts.json` 接口契约文件
-- [ ] 已创建 `knowledge/constraints.json` 约束条件文件
 - [ ] 已修改 `task-index.json` 中的项目名称
 - [ ] 已验证任务列表为空
 
@@ -284,4 +239,4 @@ python3 .harness/scripts/harness-tools.py --action list
 
 ---
 
-**最后更新：** 2026-03-18
+**最后更新：** 2026-03-17

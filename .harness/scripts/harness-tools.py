@@ -6,8 +6,8 @@ Harness 工具脚本
 
 使用示例：
     python3 .harness/scripts/harness-tools.py --action current
-    python3 .harness/scripts/harness-tools.py --action mark-done --id Infra_001
-    python3 .harness/scripts/harness-tools.py --action update-progress --id Infra_001 ...
+    python3 .harness/scripts/harness-tools.py --action mark-done --id SIM_Foundation_001
+    python3 .harness/scripts/harness-tools.py --action update-progress --id SIM_Foundation_001 ...
 """
 
 import sys
@@ -67,56 +67,6 @@ def _cleanup_pending_file(task_id: str):
         warning(f"清理 pending 文件失败 {task_id}: {e}", file=sys.stderr)
 
 
-def _sync_to_knowledge_base(task_id: str):
-    """
-    将任务产出同步到知识库
-
-    Args:
-        task_id: 任务 ID
-    """
-    import subprocess
-    try:
-        result = subprocess.run(
-            ['python3', '.harness/scripts/knowledge.py', '--action', 'sync', '--task-id', task_id],
-            capture_output=True,
-            text=True,
-            encoding='utf-8',
-            errors='replace'
-        )
-        if result.returncode == 0:
-            success(f"任务 {task_id} 的产出已同步到知识库", file=sys.stderr)
-        else:
-            warning(f"同步知识库失败: {result.stderr}", file=sys.stderr)
-    except Exception as e:
-        warning(f"同步知识库异常: {e}", file=sys.stderr)
-
-
-def run_code_standards_check() -> tuple:
-    """
-    运行代码规范检查
-
-    Returns:
-        (issue_count, output) 元组 - 问题数量和检查输出
-    """
-    import subprocess
-    try:
-        script_path = Path(__file__).parent / 'check_code_standards.py'
-        if not script_path.exists():
-            return (0, "")
-
-        result = subprocess.run(
-            ['python3', str(script_path)],
-            capture_output=True,
-            text=True,
-            encoding='utf-8',
-            errors='replace'
-        )
-        return (1 if result.returncode != 0 else 0, result.stdout + result.stderr)
-    except Exception as e:
-        warning(f"运行代码规范检查失败: {e}", file=sys.stderr)
-        return (0, "")
-
-
 def action_current(args):
     """显示当前待处理任务"""
     # 优先使用 TaskFileStorage
@@ -169,9 +119,7 @@ def action_mark_done(args):
             result = subprocess.run(
                 ['python3', '.harness/scripts/artifacts.py', '--action', 'record', '--id', args.id] + args.files,
                 capture_output=True,
-                text=True,
-                encoding='utf-8',
-                errors='replace'
+                text=True
             )
             if result.returncode != 0:
                 warning(f"记录产出失败: {result.stderr}", file=sys.stderr)
@@ -280,22 +228,10 @@ def action_mark_stage(args):
     if args.files and args.stage == 'dev':
         try:
             import subprocess
-            cmd = ['python3', '.harness/scripts/artifacts.py', '--action', 'record', '--id', args.id, '--files'] + args.files
-
-            # 添加扩展参数
-            if hasattr(args, 'design_decisions') and args.design_decisions:
-                cmd.extend(['--design-decisions'] + args.design_decisions)
-            if hasattr(args, 'interface_contracts') and args.interface_contracts:
-                cmd.extend(['--interface-contracts'] + args.interface_contracts)
-            if hasattr(args, 'constraints') and args.constraints:
-                cmd.extend(['--constraints'] + args.constraints)
-
             result = subprocess.run(
-                cmd,
+                ['python3', '.harness/scripts/artifacts.py', '--action', 'record', '--id', args.id, '--files'] + args.files,
                 capture_output=True,
-                text=True,
-                encoding='utf-8',
-                errors='replace'
+                text=True
             )
             if result.returncode != 0:
                 warning(f"记录产出失败: {result.stderr}", file=sys.stderr)
@@ -377,25 +313,6 @@ def action_mark_stage(args):
             return 1
 
         else:
-            # Test 阶段：先运行代码规范检查
-            if args.stage == 'test':
-                info("", file=sys.stderr)
-                info("=" * 60, file=sys.stderr)
-                info("[CODE STANDARDS CHECK] Test 阶段开始前自动检查...", file=sys.stderr)
-                info("=" * 60, file=sys.stderr)
-
-                issue_count, check_output = run_code_standards_check()
-                if check_output:
-                    print(check_output, file=sys.stderr)
-
-                if issue_count > 0:
-                    warning(f"代码规范检查发现问题: {issue_count} 个问题", file=sys.stderr)
-                    warning("建议: 在进入测试阶段前修复这些问题", file=sys.stderr)
-                    info("", file=sys.stderr)
-                else:
-                    success("代码规范检查通过！", file=sys.stderr)
-                    info("", file=sys.stderr)
-
             # 成功：标记为完成
             stage_info['completed'] = True
             stage_info['completed_at'] = datetime.now().isoformat()
@@ -447,8 +364,6 @@ def action_mark_stage(args):
         # 清理 pending 目录中的文件（如果所有阶段都已完成）
         if all_stages_complete:
             _cleanup_pending_file(args.id)
-            # 同步到知识库（新增）
-            _sync_to_knowledge_base(args.id)
 
         return 0
 
@@ -956,34 +871,27 @@ def main():
   python3 .harness/scripts/harness-tools.py --action current
 
   # 标记任务完成（旧版，一次性完成）
-  python3 .harness/scripts/harness-tools.py --action mark-done --id Infra_001
+  python3 .harness/scripts/harness-tools.py --action mark-done --id SIM_Foundation_001
 
   # 标记阶段完成（三阶段系统）
-  python3 .harness/scripts/harness-tools.py --action mark-stage --id Infra_001 --stage dev \\
+  python3 .harness/scripts/harness-tools.py --action mark-stage --id SIM_Foundation_001 --stage dev \\
     --files file1.php file2.php
 
-  # 标记阶段完成（包含设计决策和接口契约）
-  python3 .harness/scripts/harness-tools.py --action mark-stage --id Infra_001 --stage dev \\
-    --files file1.php file2.php \\
-    --design-decisions "使用Repository模式隔离数据访问" "采用事件驱动架构" \\
-    --interface-contracts "UserService::create|User|name,email" \\
-    --constraints "用户名必须唯一" "邮箱格式验证"
-
   # 标记阶段完成但发现问题
-  python3 .harness/scripts/harness-tools.py --action mark-stage --id Infra_001 --stage test \\
+  python3 .harness/scripts/harness-tools.py --action mark-stage --id SIM_Foundation_001 --stage test \\
     --status failed --issues "测试未通过,覆盖率不足"
 
   # 查看阶段状态
-  python3 .harness/scripts/harness-tools.py --action stage-status --id Infra_001
+  python3 .harness/scripts/harness-tools.py --action stage-status --id SIM_Foundation_001
 
   # 更新进度
-  python3 .harness/scripts/harness-tools.py --action update-progress --id Infra_001 \\
+  python3 .harness/scripts/harness-tools.py --action update-progress --id SIM_Foundation_001 \\
     --what-done "创建 Migration 文件" \\
     --test-result "文件已创建，验证通过" \\
     --next-step "继续下一个任务"
 
   # 验证任务
-  python3 .harness/scripts/harness-tools.py --action verify --id Infra_001
+  python3 .harness/scripts/harness-tools.py --action verify --id SIM_Foundation_001
 
   # 列出所有任务
   python3 .harness/scripts/harness-tools.py --action list
@@ -1010,11 +918,6 @@ def main():
     # 新增：validation 阶段参数
     parser.add_argument('--score', type=float, help='满意度评分（用于 mark-validation，0.0-1.0）')
     parser.add_argument('--tries', type=int, help='验证尝试次数（用于 mark-validation）')
-
-    # 新增：扩展产出参数（用于知识库同步）
-    parser.add_argument('--design-decisions', nargs='+', help='设计决策列表（用于 mark-stage dev）')
-    parser.add_argument('--interface-contracts', nargs='+', help='接口契约列表（格式：Service::method|return|params）')
-    parser.add_argument('--constraints', nargs='+', help='约束条件列表')
 
     args = parser.parse_args()
 

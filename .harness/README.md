@@ -1,47 +1,10 @@
 # Harness 自动化系统
 
-AI 驱动的开发自动化框架，通过三阶段质量保证系统实现高质量代码生成。
-
-**支持任意技术栈**：React、Vue、Next.js、Laravel、Django 等，开箱即用。
+AI 驱动的 Laravel 开发自动化框架，通过三阶段质量保证系统实现高质量代码生成。
 
 ---
 
 ## 快速开始
-
-### 第一步：初始化系统（首次使用必需）
-
-```bash
-# 对话式初始化（推荐）
-在 Claude Code 对话中说："帮我初始化 Harness 系统"
-
-# 或手动触发（未来实现）
-python3 .harness/scripts/init_harness.py
-```
-
-初始化向导会自动：
-- ✅ 清空历史数据
-- ✅ 识别项目技术栈（React/Vue/Laravel/等）
-- ✅ 检查开发环境
-- ✅ 生成项目配置
-- ✅ 更新提示词模板
-- ✅ 创建验收标准示例
-
-### 第二步：创建任务
-
-```bash
-# 查看验收标准示例
-cat .harness/examples/task_examples.json
-
-# 创建任务
-python3 .harness/scripts/add_task.py \
-  --id FE_Component_001 \
-  --desc "创建用户头像组件" \
-  --acceptance \
-    "src/components/UserAvatar/UserAvatar.tsx 存在" \
-    "npm test 通过"
-```
-
-### 第三步：启动自动化
 
 ```bash
 # 启动自动化
@@ -62,7 +25,6 @@ python3 .harness/scripts/harness-tools.py --action list
 .harness/
 ├── README.md                    # 本文件（核心入口）
 ├── task-index.json              # 任务索引（禁止手动编辑）
-├── project-config.json          # 【新增】项目配置（技术栈、路径、命令）
 ├── .env                         # 环境配置
 ├── run-automation.sh            # 自动化启动脚本
 │
@@ -74,20 +36,18 @@ python3 .harness/scripts/harness-tools.py --action list
 │   ├── harness-tools.py         # 核心工具（任务管理）
 │   ├── next_stage.py            # 下一阶段检测
 │   ├── add_task.py              # 创建新任务
-│   ├── knowledge.py             # 知识库管理（阶段1）
-│   ├── artifacts.py             # 产出记录
 │   ├── dual_timeout.py          # 超时控制
 │   └── ...
 │
 ├── templates/                   # Agent 提示词模板
-│   ├── init_prompt.md           # 【新增】初始化向导提示词
+│   ├── init_prompt.md           # 初始化向导
 │   ├── dev_prompt.md            # Dev 阶段
 │   ├── test_prompt.md           # Test 阶段
-│   ├── review_prompt.md         # Review 阶段
-│   └── validation_prompt.md     # 验证阶段
+│   └── review_prompt.md         # Review 阶段
 │
-├── examples/                    # 【新增】示例和模板
-│   └── task_examples.json       # 验收标准示例
+├── contracts/                   # 接口契约和约束
+│   ├── api_standards.json       # API 响应格式、错误码
+│   └── model_contracts.json     # Model 契约、关系定义
 │
 ├── docs/                        # 详细文档
 │   ├── stages_guide.md          # 三阶段系统详解
@@ -100,9 +60,6 @@ python3 .harness/scripts/harness-tools.py --action list
 │
 ├── cli-io/                      # CLI 会话管理
 ├── artifacts/                   # 任务产出记录
-├── knowledge/                   # 全局知识库
-│   ├── contracts.json           # 接口契约存储
-│   └── constraints.json         # 全局约束存储
 └── reports/                     # 执行报告
 ```
 
@@ -126,62 +83,28 @@ python3 .harness/scripts/harness-tools.py --action list
 
 ### 方式一：使用脚本（推荐）
 
-#### React/Vue 项目示例
-
-```bash
-# 创建独立任务
-python3 .harness/scripts/add_task.py \
-  --id FE_Component_001 \
-  --category feature \
-  --desc "创建用户头像组件" \
-  --acceptance \
-    "src/components/UserAvatar/UserAvatar.tsx 存在" \
-    "支持三种尺寸: small, medium, large" \
-    "npm test 通过"
-
-# 创建带依赖的任务（阶段1新功能）
-python3 .harness/scripts/add_task.py \
-  --id FE_Component_002 \
-  --category feature \
-  --desc "创建用户资料卡片（使用头像组件）" \
-  --depends-on FE_Component_001 \
-  --acceptance \
-    "src/components/UserProfile/UserProfile.tsx 存在" \
-    "引用 UserAvatar 组件" \
-    "npm test 通过"
-```
-
-#### Laravel 项目示例
-
 ```bash
 python3 .harness/scripts/add_task.py \
-  --id API_001 \
+  --id SIM_Feature_001 \
   --category feature \
   --desc "实现用户列表接口" \
-  --acceptance \
-    "app/Http/Controllers/Api/App/UserController.php 存在" \
-    "包含 index 方法" \
-    "php artisan test 通过"
-```
-
-**💡 提示**：查看更多示例
-```bash
-cat .harness/examples/task_examples.json
+  --priority P1 \
+  --acceptance "文件存在" "方法已实现" "测试通过"
 ```
 
 ### 方式二：手动创建
 
 ```bash
-cat > .harness/tasks/pending/FE_Component_001.json << 'EOF'
+cat > .harness/tasks/pending/SIM_Feature_001.json << 'EOF'
 {
-  "id": "FE_Component_001",
+  "id": "SIM_Feature_001",
   "category": "feature",
   "complexity": "medium",
-  "description": "创建用户头像组件",
+  "description": "实现用户列表接口",
   "acceptance": [
-    "src/components/UserAvatar/UserAvatar.tsx 存在",
-    "支持三种尺寸",
-    "npm test 通过"
+    "app/Http/Controllers/Api/App/UserController.php 存在",
+    "包含 index 方法",
+    "测试通过"
   ],
   "stages": {
     "dev": {"completed": false, "completed_at": null, "issues": []},
@@ -201,12 +124,11 @@ python3 .harness/scripts/task_file_storage.py --action rebuild-index
 
 ```json
 {
-  "id": "Feature_001",               // 必填：唯一标识
+  "id": "SIM_Feature_001",           // 必填：唯一标识
   "category": "feature",             // 必填：controller/model/migration/feature/fix/test/style
   "complexity": "medium",            // 可选：simple/medium/complex
   "description": "任务描述",          // 必填：清晰描述
   "acceptance": ["标准1", "标准2"],   // 必填：可验证的验收标准
-  "depends_on": ["Infra_001"],       // 可选：依赖的任务ID列表
   "validation": {                    // 可选：满意度验证
     "enabled": true,
     "threshold": 0.8,
@@ -233,33 +155,11 @@ python3 .harness/scripts/harness-tools.py --action stage-status --id TASK_ID
 python3 .harness/scripts/harness-tools.py --action mark-stage \
   --id TASK_ID --stage dev --files file1.php file2.php
 
-# 标记阶段完成（带设计决策和接口契约 - 阶段1新功能）
-python3 .harness/scripts/harness-tools.py --action mark-stage \
-  --id TASK_ID --stage dev \
-  --files file1.php file2.php \
-  --design-decisions "使用Repository模式分离数据访问逻辑" \
-  --interface-contracts "UserService::create(id: int, data: array): User" \
-  --constraints "所有数据库操作必须使用事务"
-
 # 标记任务完成
 python3 .harness/scripts/harness-tools.py --action mark-done --id TASK_ID
 
 # 验证任务
 python3 .harness/scripts/harness-tools.py --action verify --id TASK_ID
-```
-
-### 知识库管理（阶段1新功能）
-
-```bash
-# 查询接口契约
-python3 .harness/scripts/knowledge.py --action query --search "UserService"
-
-# 添加全局约束
-python3 .harness/scripts/knowledge.py --action add-constraint \
-  --constraint "所有API必须返回统一格式响应"
-
-# 从任务产出同步到知识库
-python3 .harness/scripts/knowledge.py --action sync --task-id TASK_ID
 ```
 
 ### 问题排查
@@ -286,73 +186,19 @@ python3 .harness/scripts/detect_stage_completion.py --id TASK_ID --stage test
 | `CLAUDE_CMD` | claude | Claude CLI 命令 |
 | `PERMISSION_MODE` | bypassPermissions | 权限模式 |
 | `MAX_RETRIES` | 3 | 最大重试次数 |
-| `LOOP_SLEEP` | 2 | 循环间隔（秒） |
-| `BASE_SILENCE_TIMEOUT` | 60 | 活性超时（秒）- 无输出检测 |
-| `MAX_SILENCE_TIMEOUT` | 180 | 最大活性超时（秒） |
-| `TIMEOUT_BACKOFF_FACTOR` | 1.3 | 超时递增因子 |
-| `MAX_TIMEOUT_RETRIES` | 3 | 最大超时重试次数 |
-
-### 性能优化建议
-
-如果任务执行太慢，可以调整以下参数：
-
-```bash
-# .harness/.env
-
-# 降低活性超时（更快检测卡死）
-BASE_SILENCE_TIMEOUT=60
-
-# 降低最大超时（防止长时间卡住）
-MAX_SILENCE_TIMEOUT=180
-
-# 更快的循环间隔
-LOOP_SLEEP=2
-```
-
-**硬超时配置**（在 `run-automation-stages.sh` 中）：
-- `simple` 任务：300 秒（5 分钟）
-- `medium` 任务：480 秒（8 分钟）
-- `complex` 任务：600 秒（10 分钟）
+| `LOOP_SLEEP` | 5 | 循环间隔（秒） |
+| `BASE_SILENCE_TIMEOUT` | 90 | 活性超时（秒） |
+| `MAX_SILENCE_TIMEOUT` | 240 | 最大活性超时（秒） |
 
 ---
 
 ## 重要规则
 
-1. **首次使用必须初始化** - 在对话中说 "帮我初始化 Harness 系统"
-2. **禁止手动编辑 `task-index.json`** - 由系统自动管理
-3. **创建任务后必须重建索引** - `python3 .harness/scripts/task_file_storage.py --action rebuild-index`
-4. **Dev 阶段必须记录产出** - 使用 `--files` 参数
-5. **验收标准必须具体可验证** - 明确文件路径、方法名、预期结果
-6. **测试隔离** - 确保测试不污染数据库或文件系统
-7. **技术栈适配** - 如需切换技术栈，重新执行初始化流程
-
----
-
-## 项目配置说明
-
-初始化完成后，会在 `.harness/project-config.json` 中生成项目配置：
-
-```json
-{
-  "tech_stack": {
-    "language": "typescript",
-    "framework": "react",
-    "package_manager": "npm"
-  },
-  "paths": {
-    "source": "src",
-    "components": "src/components",
-    "tests": "src/__tests__"
-  },
-  "commands": {
-    "test": "npm test",
-    "lint": "npm run lint",
-    "build": "npm run build"
-  }
-}
-```
-
-此配置文件供所有脚本和模板使用，**修改此文件可影响整个系统行为**。
+1. **禁止手动编辑 `task-index.json`** - 由系统自动管理
+2. **创建任务后必须重建索引** - `python3 .harness/scripts/task_file_storage.py --action rebuild-index`
+3. **Dev 阶段必须记录产出** - 使用 `--files` 参数
+4. **验收标准必须具体可验证** - 明确文件路径、方法名、预期结果
+5. **测试使用 DatabaseTransactions** - 禁止 RefreshDatabase
 
 ---
 
@@ -385,255 +231,210 @@ LOOP_SLEEP=2
 
 ---
 
-## 环境配置
+## 初始化指引
 
-首次使用前，需要从示例文件复制环境配置文件：
+### 使用初始化向导（推荐）
 
-```bash
-# 复制环境配置示例
-cp .harness/.env.example .harness/.env
-```
+参见 [templates/init_prompt.md](templates/init_prompt.md)，包含完整的初始化流程。
 
-`.env.example` 包含以下可调整的配置项：
-- `ENABLE_AUTO_VALIDATION` - 禁用/启用自动验证
-- `PERMISSION_MODE` - Claude CLI 权限模式
-- `BASE_SILENCE_TIMEOUT` - 基础活性超时（秒）
-- `MAX_SILENCE_TIMEOUT` - 最大活性超时（秒）
-- `LOOP_SLEEP` - 循环间隔（秒）
-- `MAX_RETRIES` - 最大重试次数
+### 迁移到新项目时需要执行的操作
 
-> ⚠️ **注意**：`.env` 文件包含敏感配置，已被 `.gitignore` 忽略，不会提交到版本控制。
+将 Harness 系统迁移到新项目时，需要清空历史数据和状态，确保系统从干净状态开始。
 
----
-
-## 初始化指引（重要）
-
-### 何时需要初始化
-
-以下情况需要执行初始化：
-- ✅ 首次将 Harness 复制到新项目
-- ✅ 切换项目技术栈（如从 Laravel 切换到 React）
-- ✅ 重置所有任务和环境数据
-- ✅ 更新模板提示词以匹配新技术栈
-
-### 智能初始化流程
-
-Harness 采用**大模型驱动的智能初始化**，无需手动配置技术栈。
-
-#### 执行方式
-
-```
-在 Claude Code 对话中说："帮我初始化 Harness 系统"
-```
-
-或（未来实现）：
+#### 1. 清空任务数据
 
 ```bash
-python3 .harness/scripts/init_harness.py
+# 删除所有待处理任务
+rm -rf .harness/tasks/pending/*.json
+
+# 删除所有已完成任务归档
+rm -rf .harness/tasks/completed/*
+
+# 删除任务索引（必须）
+rm .harness/task-index.json
 ```
 
-#### 初始化步骤
+#### 2. 清空运行日志
 
-向导会自动执行以下 9 个步骤：
+```bash
+# 删除自动化日志
+rm -rf .harness/logs/automation/*
 
-**步骤 1: 清空历史数据**
-- 删除所有旧任务
-- 清空运行日志
-- 重置 CLI 会话
-- 清空知识库
-
-**步骤 2: 识别技术栈**
-- 自动读取 `package.json` / `composer.json` / `requirements.txt`
-- 检测语言、框架、包管理器
-- 分析目录结构
-- **交互确认**检测结果
-
-**步骤 3: 检查本地环境**
-- 验证必需工具（node/php/python 等）
-- 检查版本是否满足要求
-- 提供缺失工具的安装建议
-
-**步骤 4: 生成项目配置**
-- 创建 `.harness/project-config.json`
-- 配置路径映射（components/models/tests 等）
-- 配置命令映射（test/lint/build 等）
-- 配置验收标准模板
-
-**步骤 5: 更新 CLAUDE.md**
-- 检查项目根目录是否有 `CLAUDE.md`
-- 如不存在，根据技术栈生成规范文档
-- 包含代码风格、目录结构、测试策略
-
-**步骤 6: 初始化知识库**
-- 创建 `.harness/knowledge/` 目录
-- 初始化 `contracts.json`（接口契约存储）
-- 初始化 `constraints.json`（全局约束存储）
-
-**步骤 7: 验证脚本兼容性**
-- 检查 `.harness/scripts/*.py` 是否硬编码路径
-- 自动适配脚本以读取 `project-config.json`
-
-**步骤 8: 更新模板提示词**
-- 替换 `templates/dev_prompt.md` 中的技术栈特定命令
-- 替换 `templates/test_prompt.md` 测试命令
-- 替换 `templates/review_prompt.md` 审查要点
-
-**步骤 9: 创建验收标准示例**
-- 在 `.harness/examples/task_examples.json` 添加示例
-- 包含组件、Hook、API、页面等常见任务类型
-
-#### 初始化示例
-
-```
-用户: 帮我初始化 Harness 系统
-
-LLM: 我检测到这是一个 React + TypeScript 项目，使用了 Vite 作为构建工具。
-     - 包管理器: npm
-     - 测试框架: Vitest
-     - 代码风格: ESLint + Prettier
-
-     环境检查结果:
-     ✅ Node.js v20.11.0
-     ✅ npm 10.2.0
-
-     是否继续生成配置？(Y/n)
-
-用户: Y
-
-LLM: 已创建 .harness/project-config.json
-     已更新 CLAUDE.md（React + TypeScript 规范）
-     已更新 templates/*.md（前端命令）
-
-     ✅ 初始化完成！
-     你现在可以创建任务了：
-     python3 .harness/scripts/add_task.py --id FE_Component_001 --desc "创建用户头像组件"
+# 删除进度记录
+rm -f .harness/logs/progress.md
 ```
 
-#### 支持的技术栈
+#### 3. 清空CLI会话数据
 
-初始化向导可自动识别以下技术栈：
+```bash
+# 删除当前会话
+rm -f .harness/cli-io/current.json
 
-**前端框架**
-- React + TypeScript/JavaScript
-- Vue 3 + TypeScript/JavaScript
-- Next.js (App Router/Pages Router)
-- Nuxt.js
-- Angular
-
-**后端框架**
-- Laravel (PHP)
-- Django (Python)
-- Flask (Python)
-- Express (Node.js)
-- NestJS (Node.js)
-
-**其他**
-- Go 项目
-- Rust 项目
-- 自定义技术栈（手动选择）
-
-#### 如果检测失败
-
-当无法自动识别技术栈时，向导会提供交互式选择：
-
+# 删除历史会话记录
+rm -rf .harness/cli-io/sessions/*
 ```
-⚠️  无法自动识别技术栈
 
-请手动选择技术栈：
-1. React + TypeScript
-2. Vue + TypeScript
-3. Next.js
-4. Laravel (PHP)
-5. Django (Python)
-6. 其他（请描述）
+#### 4. 清空产出记录
 
-请输入选项 (1-6):
+```bash
+# 删除任务产出记录
+rm -rf .harness/artifacts/*
+
+# 删除执行报告
+rm -rf .harness/reports/*
+```
+
+#### 5. 重置任务索引
+
+```bash
+# 初始化 task-index.json（必须执行）
+cat > .harness/task-index.json << 'EOF'
+{
+  "version": 2,
+  "storage_mode": "single_file",
+  "project": "新项目名称",
+  "created_at": "$(date -Iseconds)",
+  "updated_at": "$(date -Iseconds)",
+  "total_tasks": 0,
+  "pending": 0,
+  "completed": 0,
+  "index": {}
+}
+EOF
+
+# 或使用Python命令初始化
+python3 -c "
+import json
+from datetime import datetime
+data = {
+    'version': 2,
+    'storage_mode': 'single_file',
+    'project': '新项目名称',
+    'created_at': datetime.now().isoformat(),
+    'updated_at': datetime.now().isoformat(),
+    'total_tasks': 0,
+    'pending': 0,
+    'completed': 0,
+    'index': {}
+}
+with open('.harness/task-index.json', 'w', encoding='utf-8') as f:
+    json.dump(data, f, indent=2, ensure_ascii=False)
+"
+```
+
+#### 6. 一键重置脚本
+
+创建初始化脚本 `.harness/scripts/reset_harness.sh`：
+
+```bash
+#!/bin/bash
+
+echo "=== Harness 系统重置 ==="
+
+# 1. 清空任务
+echo "清空任务数据..."
+rm -rf tasks/pending/*.json
+rm -rf tasks/completed/*
+
+# 2. 清空日志
+echo "清空运行日志..."
+rm -rf logs/automation/*
+rm -f logs/progress.md
+
+# 3. 清空CLI会话
+echo "清空CLI会话..."
+rm -f cli-io/current.json
+rm -rf cli-io/sessions/*
+
+# 4. 清空产出
+echo "清空产出记录..."
+rm -rf artifacts/*
+rm -rf reports/*
+
+# 5. 重置索引
+echo "重置任务索引..."
+python3 -c "
+import json
+from datetime import datetime
+data = {
+    'version': 2,
+    'storage_mode': 'single_file',
+    'project': '新项目名称',
+    'created_at': datetime.now().isoformat(),
+    'updated_at': datetime.now().isoformat(),
+    'total_tasks': 0,
+    'pending': 0,
+    'completed': 0,
+    'index': {}
+}
+with open('task-index.json', 'w', encoding='utf-8') as f:
+    json.dump(data, f, indent=2, ensure_ascii=False)
+"
+
+echo "✓ 重置完成！"
+```
+
+使用方法：
+
+```bash
+cd .harness
+chmod +x scripts/reset_harness.sh
+./scripts/reset_harness.sh
+```
+
+#### 7. 修改项目配置
+
+编辑 `.harness/task-index.json`：
+
+```json
+{
+  "project": "新项目名称",  // 修改为你的项目名称
+  ...
+}
+```
+
+编辑 `.harness/.env`（如果需要）：
+
+```bash
+# 项目相关配置
+PROJECT_NAME=新项目名称
+```
+
+#### 8. 验证初始化
+
+```bash
+# 检查任务列表（应该为空）
+python3 .harness/scripts/harness-tools.py --action list
+
+# 预期输出：
+# [INFO] 项目: 新项目名称
+# [INFO] 总任务数: 0
+# [INFO] 待处理: 0
+# [INFO] 已完成: 0
 ```
 
 ---
 
 ## 初始化检查清单
 
-迁移到新项目时，向导会自动完成以下检查：
+迁移到新项目时，按以下清单逐项检查：
 
-- [x] 已清空历史任务和环境数据
-- [x] 已识别技术栈并确认
-- [x] 已检查开发环境
-- [x] 已生成 `project-config.json`
-- [x] 已创建或更新 `CLAUDE.md`
-- [x] 已初始化知识库（contracts.json + constraints.json）
-- [x] 已验证脚本兼容性
-- [x] 已更新模板提示词
-- [x] 已创建验收标准示例
-
----
-
-## 初始化输出文件
-
-初始化完成后，会生成以下文件：
-
-| 文件 | 说明 |
-|------|------|
-| `.harness/project-config.json` | 项目配置（技术栈、路径、命令） |
-| `CLAUDE.md` | 项目规范文档（如不存在） |
-| `.harness/knowledge/contracts.json` | 接口契约存储 |
-| `.harness/knowledge/constraints.json` | 全局约束存储 |
-| `.harness/templates/init_prompt.md` | 初始化向导提示词 |
-| `.harness/examples/task_examples.json` | 验收标准示例 |
+- [ ] 已删除 `tasks/pending/*.json` 所有任务文件
+- [ ] 已删除 `tasks/completed/*` 已完成任务归档
+- [ ] 已删除 `task-index.json` 并重新初始化
+- [ ] 已清空 `logs/automation/*` 运行日志
+- [ ] 已删除 `logs/progress.md` 进度记录
+- [ ] 已删除 `cli-io/current.json` 当前会话
+- [ ] 已清空 `cli-io/sessions/*` 会话历史
+- [ ] 已清空 `artifacts/*` 产出记录
+- [ ] 已清空 `reports/*` 执行报告
+- [ ] 已修改 `task-index.json` 中的项目名称
+- [ ] 已验证任务列表为空
 
 ---
 
 ## 维护者
 
-Harness Automation Team
+SIM-Laravel Team
 
-**最后更新**: 2026-03
-
-**核心特性**：
-- 🚀 智能技术栈识别
-- 🔄 三阶段质量保证（Dev → Test → Review）
-- 🔗 任务依赖管理与上下文传递（阶段1）
-- 📚 全局知识库（接口契约 + 约束条件）
-- 📦 开箱即用，支持任意技术栈
-- 🤖 大模型驱动初始化
-
----
-
-## 快速参考
-
-### 必需操作
-
-```bash
-# 首次使用
-对话中说："帮我初始化 Harness 系统"
-
-# 创建任务
-python3 .harness/scripts/add_task.py --id FE_Component_001 --desc "描述"
-
-# 启动自动化
-./.harness/run-automation.sh
-```
-
-### 常用命令
-
-```bash
-# 查看当前任务
-python3 .harness/scripts/harness-tools.py --action current
-
-# 查看所有任务
-python3 .harness/scripts/harness-tools.py --action list
-
-# 标记阶段完成
-python3 .harness/scripts/harness-tools.py --action mark-stage --id TASK_ID --stage dev --files file1 file2
-
-# 查看验收标准示例
-cat .harness/examples/task_examples.json
-```
-
-### 关键文件
-
-- **项目配置**: `.harness/project-config.json`
-- **开发规范**: `CLAUDE.md`
-- **初始化提示词**: `.harness/templates/init_prompt.md`
-- **验收示例**: `.harness/examples/task_examples.json`
-- **任务模板**: `.harness/templates/dev_prompt.md` 等
+**最后更新**: 2026-03-18

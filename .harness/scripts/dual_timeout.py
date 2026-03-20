@@ -23,7 +23,7 @@ from console_output import success, error, warning, info
 class DualTimeoutExecutor:
     """双重超时机制执行器（PTY 版本）"""
 
-    SILENCE_TIMEOUT = 60  # 1分钟（优化性能）
+    SILENCE_TIMEOUT = 180  # 3分钟
 
     def __init__(self, hard_timeout: int, verbose: bool = False):
         self.hard_timeout = hard_timeout
@@ -127,6 +127,7 @@ class DualTimeoutExecutor:
 
                     warning(f'Agent 卡死（{self.SILENCE_TIMEOUT}秒无输出）')
                     warning(f'最后输出: {int(silence_duration)}秒前')
+                    os.close(master_fd)
                     return 14
 
                 if elapsed > self.hard_timeout:
@@ -138,6 +139,7 @@ class DualTimeoutExecutor:
 
                     warning(f'Agent 硬超时（超过 {self.hard_timeout}秒）')
                     warning(f'总运行时间: {int(elapsed)}秒')
+                    os.close(master_fd)
                     return 124
 
                 if self.verbose and int(elapsed) - last_debug_output >= 30:
@@ -154,6 +156,7 @@ class DualTimeoutExecutor:
             proc.kill()
             should_stop.set()
             error(f'执行器异常: {e}')
+            os.close(master_fd)
             return 1
         finally:
             try:

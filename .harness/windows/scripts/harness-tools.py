@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Harness 工具脚本
+Harness 工具脚本 (Windows 版本)
 提供任务状态查询、进度管理等功能
 供 AI Agent 调用，不直接执行开发任务
 
 使用示例：
-    python3 .harness/scripts/harness-tools.py --action current
-    python3 .harness/scripts/harness-tools.py --action mark-done --id Infra_001
-    python3 .harness/scripts/harness-tools.py --action update-progress --id Infra_001 ...
+    python .harness\windows\scripts\harness-tools.py --action current
+    python .harness\windows\scripts\harness-tools.py --action mark-done --id SIM_Foundation_001
+    python .harness\windows\scripts\harness-tools.py --action update-progress --id SIM_Foundation_001 ...
 """
 
 import sys
@@ -67,30 +67,6 @@ def _cleanup_pending_file(task_id: str):
         warning(f"清理 pending 文件失败 {task_id}: {e}", file=sys.stderr)
 
 
-def _sync_to_knowledge_base(task_id: str):
-    """
-    将任务产出同步到知识库
-
-    Args:
-        task_id: 任务 ID
-    """
-    import subprocess
-    try:
-        result = subprocess.run(
-            ['python3', '.harness/scripts/knowledge.py', '--action', 'sync', '--task-id', task_id],
-            capture_output=True,
-            text=True,
-            encoding='utf-8',
-            errors='replace'
-        )
-        if result.returncode == 0:
-            success(f"任务 {task_id} 的产出已同步到知识库", file=sys.stderr)
-        else:
-            warning(f"同步知识库失败: {result.stderr}", file=sys.stderr)
-    except Exception as e:
-        warning(f"同步知识库异常: {e}", file=sys.stderr)
-
-
 def action_current(args):
     """显示当前待处理任务"""
     # 优先使用 TaskFileStorage
@@ -141,11 +117,9 @@ def action_mark_done(args):
             # 调用产出管理工具记录文件
             import subprocess
             result = subprocess.run(
-                ['python3', '.harness/scripts/artifacts.py', '--action', 'record', '--id', args.id] + args.files,
+                ['python', '.harness\\windows\\scripts\\artifacts.py', '--action', 'record', '--id', args.id] + args.files,
                 capture_output=True,
-                text=True,
-                encoding='utf-8',
-                errors='replace'
+                text=True
             )
             if result.returncode != 0:
                 warning(f"记录产出失败: {result.stderr}", file=sys.stderr)
@@ -227,7 +201,7 @@ def action_mark_stage(args):
         return 1
 
     # 验证 stage 参数
-    valid_stages = ['dev', 'test', 'review']
+    valid_stages = ['dev', 'test', 'review', 'validation']
     if args.stage not in valid_stages:
         error(f"无效的 stage '{args.stage}'，必须是 {valid_stages}", file=sys.stderr)
         return 1
@@ -236,17 +210,17 @@ def action_mark_stage(args):
     if args.stage == 'dev':
         if not args.files:
             error("Dev 阶段必须提供 --files 参数！", file=sys.stderr)
-            error("", file=sys.stderr)
+            error("")
             info("正确用法：", file=sys.stderr)
-            info("  python3 .harness/scripts/harness-tools.py --action mark-stage \\", file=sys.stderr)
+            info("  python .harness\\windows\\scripts\\harness-tools.py --action mark-stage \\", file=sys.stderr)
             info("    --id TASK_ID --stage dev \\", file=sys.stderr)
             info("    --files database/migrations/xxx.php \\", file=sys.stderr)
             info("           app/Models/Tenant.php \\", file=sys.stderr)
             info("           tests/Unit/TenantTest.cpp", file=sys.stderr)
-            info("", file=sys.stderr)
+            info("")
             info("如果没有创建新文件（仅修改），使用：", file=sys.stderr)
-            info("  --files ''", file=sys.stderr)
-            info("", file=sys.stderr)
+            info("  --files \"\"", file=sys.stderr)
+            info("")
             error("--files 参数用于追踪产出，这是质量保证系统的核心功能！", file=sys.stderr)
             return 1
 
@@ -254,22 +228,10 @@ def action_mark_stage(args):
     if args.files and args.stage == 'dev':
         try:
             import subprocess
-            cmd = ['python3', '.harness/scripts/artifacts.py', '--action', 'record', '--id', args.id, '--files'] + args.files
-
-            # 添加扩展参数
-            if hasattr(args, 'design_decisions') and args.design_decisions:
-                cmd.extend(['--design-decisions'] + args.design_decisions)
-            if hasattr(args, 'interface_contracts') and args.interface_contracts:
-                cmd.extend(['--interface-contracts'] + args.interface_contracts)
-            if hasattr(args, 'constraints') and args.constraints:
-                cmd.extend(['--constraints'] + args.constraints)
-
             result = subprocess.run(
-                cmd,
+                ['python', '.harness\\windows\\scripts\\artifacts.py', '--action', 'record', '--id', args.id, '--files'] + args.files,
                 capture_output=True,
-                text=True,
-                encoding='utf-8',
-                errors='replace'
+                text=True
             )
             if result.returncode != 0:
                 warning(f"记录产出失败: {result.stderr}", file=sys.stderr)
@@ -369,7 +331,6 @@ def action_mark_stage(args):
                 warning(f"处理 test_results 时发生错误: {e}", file=sys.stderr)
 
         # 检查是否所有阶段都完成，如果是则标记 passes 为 true
-        # 注意：如果启用了 validation，则还需检查 validation 阶段
         all_stages_complete = all([
             task['stages']['dev']['completed'],
             task['stages']['test']['completed'],
@@ -402,8 +363,6 @@ def action_mark_stage(args):
         # 清理 pending 目录中的文件（如果所有阶段都已完成）
         if all_stages_complete:
             _cleanup_pending_file(args.id)
-            # 同步到知识库（新增）
-            _sync_to_knowledge_base(args.id)
 
         return 0
 
@@ -430,12 +389,26 @@ def action_mark_stage(args):
             if stage_info['completed']:
                 info(f"任务 {args.id} 的 {args.stage} 阶段已经是完成状态", file=sys.stderr)
                 # 即使阶段已完成，也要检查是否所有阶段都完成并清理 pending 文件
-                if 'stages' in task and all([
-                    task['stages']['dev']['completed'],
-                    task['stages']['test']['completed'],
-                    task['stages']['review']['completed']
-                ]):
-                    _cleanup_pending_file(args.id)
+                if 'stages' in task:
+                    # 检查是否需要 validation 阶段
+                    validation_config = task.get('validation') or {}
+                    if validation_config.get('enabled', False):
+                        validation_completed = task['stages'].get('validation', {}).get('completed', False)
+                        if all([
+                            task['stages']['dev']['completed'],
+                            task['stages']['test']['completed'],
+                            task['stages']['review']['completed'],
+                            validation_completed
+                        ]):
+                            _cleanup_pending_file(args.id)
+                    else:
+                        # 旧任务：没有 validation 配置
+                        if all([
+                            task['stages']['dev']['completed'],
+                            task['stages']['test']['completed'],
+                            task['stages']['review']['completed']
+                        ]):
+                            _cleanup_pending_file(args.id)
                 return 0
 
             # 处理状态和问题
@@ -507,21 +480,9 @@ def action_mark_stage(args):
                 task['stages']['review']['completed']
             ])
 
-            # 检查是否需要 validation 阶段
-            validation_config = task.get('validation', {})
-            if validation_config.get('enabled', False):
-                validation_completed = task['stages'].get('validation', {}).get('completed', False)
-                all_stages_complete = all_stages_complete and validation_completed
-                if validation_completed:
-                    task['passes'] = True
-                    success(f"任务 {args.id} 的所有阶段（含 validation）已完成", file=sys.stderr)
-                elif args.stage == 'review':
-                    success(f"任务 {args.id} 的 review 阶段已完成，等待 Satisfaction Validation", file=sys.stderr)
-            else:
-                # 旧任务：没有 validation 配置，review 完成即任务完成
-                if all_stages_complete:
-                    task['passes'] = True
-                    success(f"任务 {args.id} 的所有阶段已完成，标记任务为完成！", file=sys.stderr)
+            if all_stages_complete:
+                task['passes'] = True
+                success(f"任务 {args.id} 的所有阶段已完成，标记任务为完成！", file=sys.stderr)
 
             break
 
@@ -596,7 +557,7 @@ def action_stage_status(args):
     # 显示各阶段状态
     info("阶段状态:")
 
-    for stage_name in ['dev', 'test', 'review']:
+    for stage_name in ['dev', 'test', 'review', 'validation']:
         stage_info = stages.get(stage_name, {})
         # 支持新格式('c')和旧格式('completed')
         completed = stage_info.get('c', stage_info.get('completed', False))
@@ -635,6 +596,15 @@ def action_stage_status(args):
                     test_status = "[OK]" if result.get('passed', result.get('s', result.get('status'))) else "[FAIL]"
                     info(f"        {test_status} {test_name}: {result.get('m', result.get('message', 'N/A'))}")
 
+        # 显示满意度评分和重试次数（仅 validation 阶段）
+        if stage_name == 'validation':
+            score = stage_info.get('score', None)
+            tries = stage_info.get('tries', None)
+            if score is not None:
+                info(f"      满意度评分: {score}")
+            if tries is not None:
+                info(f"      重试次数: {tries}")
+
     # 显示风险等级（仅 review 阶段，支持新格式 'l' 和旧格式 'risk_level'）
     review_info = stages.get('review', {})
     risk_level = review_info.get('l', review_info.get('risk_level'))
@@ -648,6 +618,12 @@ def action_stage_status(args):
         stages.get('review', {}).get('c', stages.get('review', {}).get('completed', False))
     ])
 
+    # 检查 validation 阶段（如果启用）
+    validation_config = task.get('validation') or {}
+    if validation_config.get('enabled', False):
+        validation_completed = stages.get('validation', {}).get('c', stages.get('validation', {}).get('completed', False))
+        all_complete = all_complete and validation_completed
+
     if all_complete:
         success("\n所有阶段已完成！")
     else:
@@ -656,8 +632,10 @@ def action_stage_status(args):
             next_stage = 'dev'
         elif not stages.get('test', {}).get('c', stages.get('test', {}).get('completed', False)):
             next_stage = 'test'
-        else:
+        elif not stages.get('review', {}).get('c', stages.get('review', {}).get('completed', False)):
             next_stage = 'review'
+        else:
+            next_stage = 'validation'
         info(f"\n下一个阶段: {next_stage.upper()}")
 
     return 0
@@ -908,40 +886,33 @@ def main():
         epilog="""
 使用示例:
   # 查看当前任务
-  python3 .harness/scripts/harness-tools.py --action current
+  python .harness\windows\scripts\harness-tools.py --action current
 
   # 标记任务完成（旧版，一次性完成）
-  python3 .harness/scripts/harness-tools.py --action mark-done --id Infra_001
+  python .harness\windows\scripts\harness-tools.py --action mark-done --id SIM_Foundation_001
 
   # 标记阶段完成（三阶段系统）
-  python3 .harness/scripts/harness-tools.py --action mark-stage --id Infra_001 --stage dev \\
+  python .harness\windows\scripts\harness-tools.py --action mark-stage --id SIM_Foundation_001 --stage dev ^
     --files file1.php file2.php
 
-  # 标记阶段完成（包含设计决策和接口契约）
-  python3 .harness/scripts/harness-tools.py --action mark-stage --id Infra_001 --stage dev \\
-    --files file1.php file2.php \\
-    --design-decisions "使用Repository模式隔离数据访问" "采用事件驱动架构" \\
-    --interface-contracts "UserService::create|User|name,email" \\
-    --constraints "用户名必须唯一" "邮箱格式验证"
-
   # 标记阶段完成但发现问题
-  python3 .harness/scripts/harness-tools.py --action mark-stage --id Infra_001 --stage test \\
+  python .harness\windows\scripts\harness-tools.py --action mark-stage --id SIM_Foundation_001 --stage test ^
     --status failed --issues "测试未通过,覆盖率不足"
 
   # 查看阶段状态
-  python3 .harness/scripts/harness-tools.py --action stage-status --id Infra_001
+  python .harness\windows\scripts\harness-tools.py --action stage-status --id SIM_Foundation_001
 
   # 更新进度
-  python3 .harness/scripts/harness-tools.py --action update-progress --id Infra_001 \\
-    --what-done "创建 Migration 文件" \\
-    --test-result "文件已创建，验证通过" \\
+  python .harness\windows\scripts\harness-tools.py --action update-progress --id SIM_Foundation_001 ^
+    --what-done "创建 Migration 文件" ^
+    --test-result "文件已创建，验证通过" ^
     --next-step "继续下一个任务"
 
   # 验证任务
-  python3 .harness/scripts/harness-tools.py --action verify --id Infra_001
+  python .harness\windows\scripts\harness-tools.py --action verify --id SIM_Foundation_001
 
   # 列出所有任务
-  python3 .harness/scripts/harness-tools.py --action list
+  python .harness\windows\scripts\harness-tools.py --action list
         """
     )
 
@@ -957,7 +928,7 @@ def main():
     parser.add_argument('--next-step', help='下一步（用于 update-progress）')
 
     # 阶段相关参数
-    parser.add_argument('--stage', choices=['dev', 'test', 'review', 'validation'], help='阶段名称（用于 mark-stage 或 mark-validation）')
+    parser.add_argument('--stage', choices=['dev', 'test', 'review'], help='阶段名称（用于 mark-stage）')
     parser.add_argument('--status', choices=['passed', 'failed'], help='阶段状态（用于 mark-stage）')
     parser.add_argument('--issues', nargs='+', help='问题列表（用于 mark-stage --status failed）')
     parser.add_argument('--test-results', type=str, help='测试结果JSON字符串（用于 mark-stage test）')
@@ -965,11 +936,6 @@ def main():
     # 新增：validation 阶段参数
     parser.add_argument('--score', type=float, help='满意度评分（用于 mark-validation，0.0-1.0）')
     parser.add_argument('--tries', type=int, help='验证尝试次数（用于 mark-validation）')
-
-    # 新增：扩展产出参数（用于知识库同步）
-    parser.add_argument('--design-decisions', nargs='+', help='设计决策列表（用于 mark-stage dev）')
-    parser.add_argument('--interface-contracts', nargs='+', help='接口契约列表（格式：Service::method|return|params）')
-    parser.add_argument('--constraints', nargs='+', help='约束条件列表')
 
     args = parser.parse_args()
 

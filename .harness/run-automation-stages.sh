@@ -22,12 +22,12 @@ VERBOSE="${VERBOSE:-false}"
 PERMISSION_MODE="${PERMISSION_MODE:-bypassPermissions}"
 
 # ═══════════════════════════════════════════════════════════════
-#                   超时优化配置（性能优先 2026-03）
+#                   超时优化配置（2026-03-18 中等调整）
 # ═══════════════════════════════════════════════════════════════
-MAX_TIMEOUT_RETRIES="${MAX_TIMEOUT_RETRIES:-3}"    # 最大超时重试次数
-TIMEOUT_BACKOFF_FACTOR="${TIMEOUT_BACKOFF_FACTOR:-1.3}"  # 超时递增因子
-BASE_SILENCE_TIMEOUT="${BASE_SILENCE_TIMEOUT:-60}"  # 基础活性超时（秒）
-MAX_SILENCE_TIMEOUT="${MAX_SILENCE_TIMEOUT:-180}"  # 最大活性超时（秒）- 防止无限递增
+MAX_TIMEOUT_RETRIES="${MAX_TIMEOUT_RETRIES:-5}"    # 最大超时重试次数
+TIMEOUT_BACKOFF_FACTOR="${TIMEOUT_BACKOFF_FACTOR:-1.5}"  # 超时递增因子
+BASE_SILENCE_TIMEOUT="${BASE_SILENCE_TIMEOUT:-90}"   # 基础活性超时（秒）
+MAX_SILENCE_TIMEOUT="${MAX_SILENCE_TIMEOUT:-240}"   # 最大活性超时（秒）- 防止无限递增
 
 # Setup logging
 # 日志文件输出到 logs/automation/ 目录，按年/月组织
@@ -186,21 +186,20 @@ except Exception as e:
 }
 
 # Get hard timeout based on complexity
-# 优化后的硬超时（性能优先）
 get_hard_timeout() {
     local complexity=$1
     case "$complexity" in
         simple)
-            echo 300   # 5分钟
-            ;;
-        medium)
             echo 480   # 8分钟
             ;;
+        medium)
+            echo 720  # 12分钟
+            ;;
         complex)
-            echo 600   # 10分钟
+            echo 900  # 15分钟
             ;;
         *)
-            echo 300   # 默认 5分钟
+            echo 480   # 默认 8分钟
             ;;
     esac
 }
@@ -520,47 +519,31 @@ for task in data['tasks']:
                 "$template_file")"
         else
             # For dev/test/review stages, use simple replacement
+            # Generate dependency context
+            dependency_context=""
+            if [ "$current_stage" = "dev" ]; then
+                dependency_context=$("$PYTHON_CMD" -c "
+import sys
+import os
+sys.path.insert(0, '.harness/scripts')
+try:
+    from context_manager import ContextManager
+    manager = ContextManager()
+    context = manager.build_agent_context('$current_task_id', 'dev')
+    prompt = manager.format_context_for_prompt(context)
+    print(prompt)
+except Exception as e:
+    print('', file=sys.stderr)
+" 2>/dev/null || echo "")
+            fi
+
             sed -e "s|{TASK_ID}|$current_task_id|g" \
+                -e "s|{DEPENDENCY_CONTEXT}|$dependency_context|g" \
                 "$template_file"
         fi
     } > "$prompt_file"
 
     log_verbose "Prompt 已组装到: $prompt_file"
-
-    # ═══════════════════════════════════════════════════════════════
-    #           代码规范检查（Test 阶段前执行）
-    # ═══════════════════════════════════════════════════════════════
-    if [ "$current_stage" = "test" ]; then
-        log "🔍 执行代码规范检查..."
-        check_result=$("$PYTHON_CMD" .harness/scripts/check_code_standards.py 2>&1)
-        check_exit_code=$?
-
-        if [ $check_exit_code -ne 0 ]; then
-            log "❌ 代码规范检查未通过，发现问题："
-            echo "$check_result" | head -50
-            log ""
-            log "💡 请先修复上述问题后再执行 Test 阶段"
-
-            # 记录问题到 dev 阶段
-            "$PYTHON_CMD" -c "
-import sys
-sys.path.insert(0, '.harness/scripts')
-from task_utils import load_tasks, save_tasks
-data = load_tasks()
-for task in data['tasks']:
-    if task['id'] == '$current_task_id':
-        task['stages']['dev']['issues'].append('代码规范检查未通过，请查看日志')
-        break
-save_tasks(data)
-" 2>/dev/null || true
-
-            # 标记为失败，触发重试
-            is_completed=""
-        else
-            log "✅ 代码规范检查通过"
-        fi
-        log ""
-    fi
 
     # Execute Claude Code CLI Agent
     log "🤖 调用 Claude Code CLI ($current_stage Agent)..."

@@ -734,9 +734,7 @@ def _write_result_to_task(task_id: str, score: float, tries: int) -> bool:
                 '--tries', str(tries)
             ],
             capture_output=True,
-            text=True,
-            encoding='utf-8',
-            errors='replace'
+            text=True
         )
         if result.returncode == 0:
             info(f"验证结果已写入任务 {task_id} (score: {score}, tries: {tries})")

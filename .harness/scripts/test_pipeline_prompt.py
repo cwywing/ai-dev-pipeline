@@ -96,13 +96,13 @@ def build_validation_prompt(short: bool = False) -> str:
 
     if short:
         # 简短版本：只包含基本信息
-        prompt_parts.append("**Task ID:** Test_Final_001")
+        prompt_parts.append("**Task ID:** SIM_API_Fix_Final_001")
         prompt_parts.append("**Current Stage:** validation")
         prompt_parts.append("**Description:** API 自动化测试修复项目最终验收")
     else:
         # 完整版本：包含所有信息
         prompt_parts.append("## Current Task & Stage")
-        prompt_parts.append("**Task ID:** Test_Final_001")
+        prompt_parts.append("**Task ID:** SIM_API_Fix_Final_001")
         prompt_parts.append("**Current Stage:** VALIDATION")
         prompt_parts.append("**Category:** feature")
         prompt_parts.append("**Description:** API 自动化测试修复项目最终验收")
@@ -130,7 +130,7 @@ def build_validation_prompt(short: bool = False) -> str:
 
         # 替换占位符
         if short:
-            template_content = template_content.replace("{TASK_ID}", "Test_Final_001")
+            template_content = template_content.replace("{TASK_ID}", "SIM_API_Fix_Final_001")
             template_content = template_content.replace("{DESCRIPTION}", "API 自动化测试修复项目最终验收")
             template_content = template_content.replace("{ACCEPTANCE_CRITERIA}", "1. 测试通过率 80%+ 2. 路由 100+ 条 3. P0/P1 完成 4. Pint 通过")
             template_content = template_content.replace("{ARTIFACTS_LIST}", "暂无产出")
