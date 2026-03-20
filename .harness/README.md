@@ -233,6 +233,108 @@ python3 .harness/scripts/detect_stage_completion.py --id TASK_ID --stage test
 
 ## 初始化指引
 
+### 首次使用初始化（必须执行）
+
+首次将 Harness 复制到新项目时，需要执行以下初始化步骤：
+
+#### 1. 复制环境配置
+
+```bash
+# 复制环境配置示例
+cp .harness/.env.example .harness/.env
+```
+
+#### 2. 创建必需的目录结构
+
+```bash
+# 创建运行时目录
+mkdir -p .harness/tasks/pending
+mkdir -p .harness/tasks/completed
+mkdir -p .harness/logs/automation
+mkdir -p .harness/cli-io/sessions
+mkdir -p .harness/artifacts
+mkdir -p .harness/reports
+mkdir -p .harness/knowledge
+```
+
+#### 3. 初始化任务索引
+
+```bash
+# 初始化 task-index.json
+cat > .harness/task-index.json << 'EOF'
+{
+  "version": 2,
+  "storage_mode": "single_file",
+  "project": "你的项目名称",
+  "created_at": "2024-01-01T00:00:00",
+  "updated_at": "2024-01-01T00:00:00",
+  "total_tasks": 0,
+  "pending": 0,
+  "completed": 0,
+  "index": {}
+}
+EOF
+```
+
+#### 4. 初始化知识库（可选，用于 Laravel 开发规范）
+
+```bash
+# 初始化 constraints.json（全局约束）
+cat > .harness/knowledge/constraints.json << 'EOF'
+{
+  "version": 1,
+  "global": [
+    "所有 API 必须使用 API Resource 格式化响应",
+    "所有验证必须使用 FormRequest",
+    "业务逻辑必须在 Service 层"
+  ],
+  "per_module": {}
+}
+EOF
+
+# 初始化 contracts.json（接口契约）
+cat > .harness/knowledge/contracts.json << 'EOF'
+{
+  "version": 1,
+  "services": {},
+  "api_responses": {
+    "list": {
+      "structure": {"data": "array", "meta": {"total": "integer"}}
+    },
+    "error": {
+      "structure": {"message": "string", "errors": "object"}
+    }
+  }
+}
+EOF
+```
+
+#### 5. 初始化项目配置（可选）
+
+```bash
+# 初始化 project-config.json
+cat > .harness/project-config.json << 'EOF'
+{
+  "tech_stack": {
+    "language": "php",
+    "framework": "laravel"
+  },
+  "paths": {
+    "source": "app",
+    "controllers": "app/Http/Controllers",
+    "models": "app/Models",
+    "tests": "tests"
+  },
+  "commands": {
+    "test": "php artisan test",
+    "lint": "php artisan pint"
+  }
+}
+EOF
+```
+
+---
+
 ### 使用初始化向导（推荐）
 
 参见 [templates/init_prompt.md](templates/init_prompt.md)，包含完整的初始化流程。
