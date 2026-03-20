@@ -19,6 +19,8 @@ Task Data Codec - 任务数据编码/解码器
 - notes → n
 - complexity → x
 - stages → s
+- depends_on → dep (支持两种格式：["id"] 或 [{"id": "x", "reason": "y"}])
+- validation → val
 - completed → c
 - completed_at → t (Unix timestamp)
 - issues → i
@@ -50,6 +52,7 @@ class TaskCodec:
         'complexity': 'x',
         'stages': 's',
         'validation': 'val',  # 新增：满意度验证配置
+        'depends_on': 'dep',  # 新增：任务依赖关系
     }
 
     # 阶段字段映射表
@@ -422,6 +425,10 @@ class TaskCodec:
                     'val': task.get('validation', {}),  # 新增：满意度验证配置
                 }
 
+                # 添加 depends_on 字段（如果存在）
+                if task.get('depends_on'):
+                    task_data['dep'] = task.get('depends_on')
+
                 # 写入文件（原子操作）
                 temp_file = str(task_file) + '.tmp'
                 with open(temp_file, 'w', encoding='utf-8') as f:
@@ -586,7 +593,7 @@ class TaskCodec:
 
         return {
             'version': 2,
-            'project': index.get('project', 'SIM-Laravel Admin API'),
+            'project': index.get('project', '配料表安全检测系统'),
             'tasks': all_tasks,
             '_single_file_mode': True,
             '_loaded_count': loaded_count,
@@ -632,7 +639,7 @@ class TaskCodec:
         # 构造完整的任务数据结构
         return {
             'version': 2,
-            'project': index.get('project', 'SIM-Laravel Admin API'),
+            'project': index.get('project', '配料表安全检测系统'),
             'tasks': all_tasks,
             '_split_source': True,  # 标记来源于拆分文件
         }

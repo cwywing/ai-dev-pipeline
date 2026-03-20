@@ -48,8 +48,8 @@ def create_task_template(task_id, category, description, priority, acceptance,
         "passes": False,
         "priority": priority,
         "notes": notes or "",
-        "depends_on": depends_on or [],  # 支持两种格式：["id"] 或 [{"id": "x", "reason": "y"}]
-        "validation": validation_config,
+        "depends_on": depends_on or [],  # 新增：依赖任务列表
+        "validation": validation_config,  # 新增：满意度验证配置
         "stages": {
             "dev": {
                 "completed": False,
@@ -77,13 +77,9 @@ def detect_circular_dependency(task_id, depends_on, all_tasks):
     """
     检测循环依赖
 
-    支持两种依赖格式：
-    - 简单格式: ["Model_001", "Auth_001"]
-    - 结构化格式: [{"id": "Model_001", "reason": "需要用户模型"}]
-
     Args:
         task_id: 当前任务ID
-        depends_on: 依赖任务ID列表（支持两种格式）
+        depends_on: 依赖任务ID列表
         all_tasks: 所有任务字典 {task_id: task_data}
 
     Returns:
@@ -107,26 +103,15 @@ def detect_circular_dependency(task_id, depends_on, all_tasks):
 
         task = all_tasks.get(current_id)
         if task:
-            # 支持两种格式
-            task_deps = task.get('depends_on', [])
-            for dep in task_deps:
-                if isinstance(dep, dict):
-                    dep_id = dep.get('id') or dep.get('task_id')
-                else:
-                    dep_id = dep
-                if dep_id and dfs(dep_id):
+            for dep_id in task.get('depends_on', []):
+                if dfs(dep_id):
                     return True
 
         path.pop()
         return False
 
     # 从当前任务的依赖开始检查
-    for dep in depends_on:
-        # 支持两种格式
-        if isinstance(dep, dict):
-            dep_id = dep.get('id') or dep.get('task_id')
-        else:
-            dep_id = dep
+    for dep_id in depends_on:
         path = [task_id]
         if dfs(dep_id):
             return True, cycle_path
@@ -165,30 +150,8 @@ def action_add_task(args):
     # 处理依赖参数
     depends_on = args.depends_on or []
     if depends_on:
-        # 支持两种格式：
-        # 简单格式: --depends-on Model_001 Auth_001
-        # 结构化格式: --depends-on "Model_001:需要用户模型" "Auth_001:需要认证逻辑"
-        parsed_deps = []
-        for dep in depends_on:
-            if ':' in dep:
-                # 结构化格式: "id:reason"
-                parts = dep.split(':', 1)
-                dep_id = parts[0].strip()
-                dep_reason = parts[1].strip() if len(parts) > 1 else ''
-                parsed_deps.append({"id": dep_id, "reason": dep_reason})
-            else:
-                # 简单格式: "id"
-                parsed_deps.append(dep)
-
-        depends_on = parsed_deps
-
         # 验证依赖任务是否存在
-        for dep in depends_on:
-            if isinstance(dep, dict):
-                dep_id = dep.get('id')
-            else:
-                dep_id = dep
-
+        for dep_id in depends_on:
             if dep_id not in all_tasks_dict:
                 error(f"依赖的任务 {dep_id} 不存在")
                 warning(f"请先创建任务 {dep_id}，然后再创建依赖它的任务")
@@ -201,19 +164,7 @@ def action_add_task(args):
             error("循环依赖会导致任务无法执行，请调整任务依赖关系")
             return 1
 
-        # 显示依赖信息
-        dep_display = []
-        for dep in depends_on:
-            if isinstance(dep, dict):
-                dep_id = dep.get('id')
-                dep_reason = dep.get('reason', '')
-                if dep_reason:
-                    dep_display.append(f"{dep_id} ({dep_reason})")
-                else:
-                    dep_display.append(dep_id)
-            else:
-                dep_display.append(dep)
-        info(f"任务依赖: {', '.join(dep_display)}")
+        info(f"任务依赖: {', '.join(depends_on)}")
 
     # 创建新任务
     new_task = create_task_template(
@@ -237,19 +188,7 @@ def action_add_task(args):
         info(f"   优先级: {args.priority or 'P2'}")
         info(f"   验收标准: {len(args.acceptance)} 项")
         if depends_on:
-            # 格式化显示依赖
-            dep_display = []
-            for dep in depends_on:
-                if isinstance(dep, dict):
-                    dep_id = dep.get('id')
-                    dep_reason = dep.get('reason', '')
-                    if dep_reason:
-                        dep_display.append(f"{dep_id} ({dep_reason})")
-                    else:
-                        dep_display.append(dep_id)
-                else:
-                    dep_display.append(dep)
-            info(f"   依赖任务: {', '.join(dep_display)}")
+            info(f"   依赖任务: {', '.join(depends_on)}")
         return 0
     else:
         error(f"保存任务 {args.id} 失败")
@@ -271,18 +210,11 @@ def main():
     --priority P2 \\
     --acceptance "文件存在" "方法已实现" "测试通过"
 
-【示例 2】添加带依赖的任务（简单格式）
+【示例 2】添加带依赖的任务
   python3 .harness/scripts/add_task.py --id API_001 \\
     --category controller --desc "创建用户管理 API" \\
     --priority P1 \\
     --depends-on Model_001 Auth_001 \\
-    --acceptance "GET /api/v1/admin/users 返回用户列表" "POST /api/v1/admin/users 创建用户"
-
-【示例 3】添加带依赖的任务（结构化格式，包含原因）
-  python3 .harness/scripts/add_task.py --id API_001 \\
-    --category controller --desc "创建用户管理 API" \\
-    --priority P1 \\
-    --depends-on "Model_001:需要用户模型" "Auth_001:需要认证逻辑" \\
     --acceptance "GET /api/v1/admin/users 返回用户列表" "POST /api/v1/admin/users 创建用户"
 
 【示例 3】添加中等复杂度任务（启用满意度验证，阈值 0.6）
@@ -311,32 +243,13 @@ def main():
 
 --depends-on 参数说明：
   指定当前任务依赖的其他任务ID，依赖任务必须先完成
-
-  支持两种格式：
-  1. 简单格式（仅ID）：
-     --depends-on Model_001 Auth_001
-
-  2. 结构化格式（ID + 原因）：
-     --depends-on "Model_001:需要用户模型" "Auth_001:需要认证逻辑"
-
-  推荐使用结构化格式，可以清晰记录依赖原因，方便后续维护。
+  示例：--depends-on Model_001 Auth_001
 
 依赖规则：
   1. 依赖的任务必须已存在
   2. 不允许循环依赖（A依赖B，B依赖A）
   3. 依赖任务未完成时，当前任务会被跳过
   4. 依赖任务完成后，当前任务才会被执行
-  5. 依赖任务的产出和决策会自动注入到当前任务的上下文中
-
-上下文注入：
-  当任务开始执行时，系统会自动注入依赖任务的：
-  - 产出文件列表（从 artifacts 记录中获取）
-  - 关键决策记录（从任务的 notes 字段中提取）
-
-  示例：
-  任务 Model_001 的 notes: "使用 UUID 作为主键，软删除使用 deleted_at"
-  任务 API_001 依赖 Model_001
-  执行 API_001 时会显示：Model_001 的决策：使用 UUID 作为主键...
 
 依赖场景示例：
   任务 A: Model_001 创建 User 模型

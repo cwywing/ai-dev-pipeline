@@ -74,6 +74,8 @@ python3 .harness/scripts/harness-tools.py --action list
 │   ├── harness-tools.py         # 核心工具（任务管理）
 │   ├── next_stage.py            # 下一阶段检测
 │   ├── add_task.py              # 创建新任务
+│   ├── knowledge.py             # 知识库管理（阶段1）
+│   ├── artifacts.py             # 产出记录
 │   ├── dual_timeout.py          # 超时控制
 │   └── ...
 │
@@ -98,6 +100,9 @@ python3 .harness/scripts/harness-tools.py --action list
 │
 ├── cli-io/                      # CLI 会话管理
 ├── artifacts/                   # 任务产出记录
+├── knowledge/                   # 全局知识库
+│   ├── contracts.json           # 接口契约存储
+│   └── constraints.json         # 全局约束存储
 └── reports/                     # 执行报告
 ```
 
@@ -124,6 +129,7 @@ python3 .harness/scripts/harness-tools.py --action list
 #### React/Vue 项目示例
 
 ```bash
+# 创建独立任务
 python3 .harness/scripts/add_task.py \
   --id FE_Component_001 \
   --category feature \
@@ -132,13 +138,24 @@ python3 .harness/scripts/add_task.py \
     "src/components/UserAvatar/UserAvatar.tsx 存在" \
     "支持三种尺寸: small, medium, large" \
     "npm test 通过"
+
+# 创建带依赖的任务（阶段1新功能）
+python3 .harness/scripts/add_task.py \
+  --id FE_Component_002 \
+  --category feature \
+  --desc "创建用户资料卡片（使用头像组件）" \
+  --depends-on FE_Component_001 \
+  --acceptance \
+    "src/components/UserProfile/UserProfile.tsx 存在" \
+    "引用 UserAvatar 组件" \
+    "npm test 通过"
 ```
 
 #### Laravel 项目示例
 
 ```bash
 python3 .harness/scripts/add_task.py \
-  --id SIM_API_001 \
+  --id API_001 \
   --category feature \
   --desc "实现用户列表接口" \
   --acceptance \
@@ -184,11 +201,12 @@ python3 .harness/scripts/task_file_storage.py --action rebuild-index
 
 ```json
 {
-  "id": "SIM_Feature_001",           // 必填：唯一标识
+  "id": "Feature_001",               // 必填：唯一标识
   "category": "feature",             // 必填：controller/model/migration/feature/fix/test/style
   "complexity": "medium",            // 可选：simple/medium/complex
   "description": "任务描述",          // 必填：清晰描述
   "acceptance": ["标准1", "标准2"],   // 必填：可验证的验收标准
+  "depends_on": ["Infra_001"],       // 可选：依赖的任务ID列表
   "validation": {                    // 可选：满意度验证
     "enabled": true,
     "threshold": 0.8,
@@ -215,11 +233,33 @@ python3 .harness/scripts/harness-tools.py --action stage-status --id TASK_ID
 python3 .harness/scripts/harness-tools.py --action mark-stage \
   --id TASK_ID --stage dev --files file1.php file2.php
 
+# 标记阶段完成（带设计决策和接口契约 - 阶段1新功能）
+python3 .harness/scripts/harness-tools.py --action mark-stage \
+  --id TASK_ID --stage dev \
+  --files file1.php file2.php \
+  --design-decisions "使用Repository模式分离数据访问逻辑" \
+  --interface-contracts "UserService::create(id: int, data: array): User" \
+  --constraints "所有数据库操作必须使用事务"
+
 # 标记任务完成
 python3 .harness/scripts/harness-tools.py --action mark-done --id TASK_ID
 
 # 验证任务
 python3 .harness/scripts/harness-tools.py --action verify --id TASK_ID
+```
+
+### 知识库管理（阶段1新功能）
+
+```bash
+# 查询接口契约
+python3 .harness/scripts/knowledge.py --action query --search "UserService"
+
+# 添加全局约束
+python3 .harness/scripts/knowledge.py --action add-constraint \
+  --constraint "所有API必须返回统一格式响应"
+
+# 从任务产出同步到知识库
+python3 .harness/scripts/knowledge.py --action sync --task-id TASK_ID
 ```
 
 ### 问题排查
@@ -345,6 +385,27 @@ LOOP_SLEEP=2
 
 ---
 
+## 环境配置
+
+首次使用前，需要从示例文件复制环境配置文件：
+
+```bash
+# 复制环境配置示例
+cp .harness/.env.example .harness/.env
+```
+
+`.env.example` 包含以下可调整的配置项：
+- `ENABLE_AUTO_VALIDATION` - 禁用/启用自动验证
+- `PERMISSION_MODE` - Claude CLI 权限模式
+- `BASE_SILENCE_TIMEOUT` - 基础活性超时（秒）
+- `MAX_SILENCE_TIMEOUT` - 最大活性超时（秒）
+- `LOOP_SLEEP` - 循环间隔（秒）
+- `MAX_RETRIES` - 最大重试次数
+
+> ⚠️ **注意**：`.env` 文件包含敏感配置，已被 `.gitignore` 忽略，不会提交到版本控制。
+
+---
+
 ## 初始化指引（重要）
 
 ### 何时需要初始化
@@ -373,12 +434,13 @@ python3 .harness/scripts/init_harness.py
 
 #### 初始化步骤
 
-向导会自动执行以下 8 个步骤：
+向导会自动执行以下 9 个步骤：
 
 **步骤 1: 清空历史数据**
 - 删除所有旧任务
 - 清空运行日志
 - 重置 CLI 会话
+- 清空知识库
 
 **步骤 2: 识别技术栈**
 - 自动读取 `package.json` / `composer.json` / `requirements.txt`
@@ -402,16 +464,21 @@ python3 .harness/scripts/init_harness.py
 - 如不存在，根据技术栈生成规范文档
 - 包含代码风格、目录结构、测试策略
 
-**步骤 6: 验证脚本兼容性**
+**步骤 6: 初始化知识库**
+- 创建 `.harness/knowledge/` 目录
+- 初始化 `contracts.json`（接口契约存储）
+- 初始化 `constraints.json`（全局约束存储）
+
+**步骤 7: 验证脚本兼容性**
 - 检查 `.harness/scripts/*.py` 是否硬编码路径
 - 自动适配脚本以读取 `project-config.json`
 
-**步骤 7: 更新模板提示词**
+**步骤 8: 更新模板提示词**
 - 替换 `templates/dev_prompt.md` 中的技术栈特定命令
 - 替换 `templates/test_prompt.md` 测试命令
 - 替换 `templates/review_prompt.md` 审查要点
 
-**步骤 8: 创建验收标准示例**
+**步骤 9: 创建验收标准示例**
 - 在 `.harness/examples/task_examples.json` 添加示例
 - 包含组件、Hook、API、页面等常见任务类型
 
@@ -494,6 +561,7 @@ LLM: 已创建 .harness/project-config.json
 - [x] 已检查开发环境
 - [x] 已生成 `project-config.json`
 - [x] 已创建或更新 `CLAUDE.md`
+- [x] 已初始化知识库（contracts.json + constraints.json）
 - [x] 已验证脚本兼容性
 - [x] 已更新模板提示词
 - [x] 已创建验收标准示例
@@ -508,6 +576,8 @@ LLM: 已创建 .harness/project-config.json
 |------|------|
 | `.harness/project-config.json` | 项目配置（技术栈、路径、命令） |
 | `CLAUDE.md` | 项目规范文档（如不存在） |
+| `.harness/knowledge/contracts.json` | 接口契约存储 |
+| `.harness/knowledge/constraints.json` | 全局约束存储 |
 | `.harness/templates/init_prompt.md` | 初始化向导提示词 |
 | `.harness/examples/task_examples.json` | 验收标准示例 |
 
@@ -522,6 +592,8 @@ Harness Automation Team
 **核心特性**：
 - 🚀 智能技术栈识别
 - 🔄 三阶段质量保证（Dev → Test → Review）
+- 🔗 任务依赖管理与上下文传递（阶段1）
+- 📚 全局知识库（接口契约 + 约束条件）
 - 📦 开箱即用，支持任意技术栈
 - 🤖 大模型驱动初始化
 

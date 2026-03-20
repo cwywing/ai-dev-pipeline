@@ -527,6 +527,41 @@ for task in data['tasks']:
 
     log_verbose "Prompt 已组装到: $prompt_file"
 
+    # ═══════════════════════════════════════════════════════════════
+    #           代码规范检查（Test 阶段前执行）
+    # ═══════════════════════════════════════════════════════════════
+    if [ "$current_stage" = "test" ]; then
+        log "🔍 执行代码规范检查..."
+        check_result=$("$PYTHON_CMD" .harness/scripts/check_code_standards.py 2>&1)
+        check_exit_code=$?
+
+        if [ $check_exit_code -ne 0 ]; then
+            log "❌ 代码规范检查未通过，发现问题："
+            echo "$check_result" | head -50
+            log ""
+            log "💡 请先修复上述问题后再执行 Test 阶段"
+
+            # 记录问题到 dev 阶段
+            "$PYTHON_CMD" -c "
+import sys
+sys.path.insert(0, '.harness/scripts')
+from task_utils import load_tasks, save_tasks
+data = load_tasks()
+for task in data['tasks']:
+    if task['id'] == '$current_task_id':
+        task['stages']['dev']['issues'].append('代码规范检查未通过，请查看日志')
+        break
+save_tasks(data)
+" 2>/dev/null || true
+
+            # 标记为失败，触发重试
+            is_completed=""
+        else
+            log "✅ 代码规范检查通过"
+        fi
+        log ""
+    fi
+
     # Execute Claude Code CLI Agent
     log "🤖 调用 Claude Code CLI ($current_stage Agent)..."
     log "────────────────────────────────────────"

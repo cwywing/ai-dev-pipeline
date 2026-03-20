@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-混合模式阶段完成检测脚本 (Windows 版本)
+混合模式阶段完成检测脚本 (Unix/Mac 版本)
 
 功能：
 - 检测 Dev/Test/Review 阶段是否完成
@@ -9,8 +9,8 @@
 - 混合检测模式：主动检测 + 被动检测 + 旁路检测
 
 使用示例：
-    python .harness\windows\scripts\detect_stage_completion.py ^
-        --id SIM_Test_Fix_Compatibility_001 ^
+    python3 .harness/scripts/detect_stage_completion.py \
+        --id Test_001 \
         --stage test
 
 退出码说明：
@@ -262,6 +262,8 @@ class DetectStageCompletion:
                 ['git', 'status', '--porcelain'],
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 timeout=10
             )
 
@@ -567,23 +569,23 @@ class DetectStageCompletion:
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(
-        description='混合模式阶段完成检测脚本',
+        description='混合模式阶段完成检测脚本 (Unix/Mac)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用示例:
     # 检测 Test 阶段
-    python .harness\windows\scripts\detect_stage_completion.py ^
-        --id SIM_Test_Fix_Compatibility_001 ^
+    python3 .harness/scripts/detect_stage_completion.py \\
+        --id Test_001 \\
         --stage test
 
     # 检测 Review 阶段
-    python .harness\windows\scripts\detect_stage_completion.py ^
-        --id SIM_Test_Fix_Compatibility_001 ^
+    python3 .harness/scripts/detect_stage_completion.py \\
+        --id Test_001 \\
         --stage review
 
     # 检测 Dev 阶段
-    python .harness\windows\scripts\detect_stage_completion.py ^
-        --id SIM_Foundation_001 ^
+    python3 .harness/scripts/detect_stage_completion.py \\
+        --id Infra_001 \\
         --stage dev
 
 退出码:

@@ -8,7 +8,7 @@ $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
-echo "=== SIM_Foundation_001 Migration Test Report ===\n\n";
+echo "=== Infra_001 Migration Test Report ===\n\n";
 
 // Test 1: Check tables exist
 echo "1. Tables Existence Check:\n";

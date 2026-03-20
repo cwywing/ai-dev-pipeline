@@ -190,7 +190,7 @@
     {
       "type": "controller",
       "tech_stack": "laravel",
-      "id": "SIM_API_001",
+      "id": "API_001",
       "category": "feature",
       "complexity": "medium",
       "description": "创建用户列表接口",
@@ -211,7 +211,7 @@
     {
       "type": "migration",
       "tech_stack": "laravel",
-      "id": "SIM_DB_001",
+      "id": "DB_001",
       "category": "migration",
       "complexity": "simple",
       "description": "创建用户地址表迁移",
@@ -230,7 +230,7 @@
     {
       "type": "model",
       "tech_stack": "laravel",
-      "id": "SIM_Model_001",
+      "id": "Model_001",
       "category": "model",
       "complexity": "medium",
       "description": "创建 UserAddress 模型",
@@ -248,7 +248,7 @@
     {
       "type": "service",
       "tech_stack": "laravel",
-      "id": "SIM_Service_001",
+      "id": "Service_001",
       "category": "feature",
       "complexity": "complex",
       "description": "创建订单处理服务",

@@ -53,7 +53,7 @@ Dev Agent → Test Agent → Review Agent → 完成
   "version": 2,
   "tasks": [
     {
-      "id": "SIM_Sim_001",
+      "id": "Sim_001",
       "description": "实现 SIM 列表查询接口",
       "passes": false,
       "stages": {
@@ -103,7 +103,7 @@ Dev Agent → Test Agent → Review Agent → 完成
 python3 .harness/scripts/next_stage.py
 
 # 查看特定任务的所有阶段状态
-python3 .harness/scripts/harness-tools.py --action stage-status --id SIM_Sim_001
+python3 .harness/scripts/harness-tools.py --action stage-status --id Sim_001
 ```
 
 ### 3. 手动标记阶段完成
@@ -111,16 +111,16 @@ python3 .harness/scripts/harness-tools.py --action stage-status --id SIM_Sim_001
 ```bash
 # 标记 dev 阶段完成（记录产出）
 python3 .harness/scripts/harness-tools.py --action mark-stage \\
-  --id SIM_Sim_001 --stage dev \\
+  --id Sim_001 --stage dev \\
   --files app/Models/Tenant.php tests/Unit/TenantTest.php
 
 # 标记 test 阶段完成（通过）
 python3 .harness/scripts/harness-tools.py --action mark-stage \\
-  --id SIM_Sim_001 --stage test --status passed
+  --id Sim_001 --stage test --status passed
 
 # 标记 test 阶段失败（发现问题）
 python3 .harness/scripts/harness-tools.py --action mark-stage \\
-  --id SIM_Sim_001 --stage test --status failed \\
+  --id Sim_001 --stage test --status failed \\
   --issues "测试未通过" "覆盖率不足" "边界情况未处理"
 ```
 

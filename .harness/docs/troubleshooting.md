@@ -211,4 +211,4 @@ python3 .harness/scripts/task_file_storage.py --action stats
 ---
 
 **最后更新**: 2026-03
-**维护者**: SIM-Laravel Team
+**维护者**: 配料表安全检测系统 Team

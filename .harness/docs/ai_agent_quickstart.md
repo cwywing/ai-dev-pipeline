@@ -1,4 +1,4 @@
-# SIM-Laravel 自动化系统快速入门指南
+# 配料表安全检测系统 自动化系统快速入门指南
 
 ## 🤖 专为 AI 助手设计
 
@@ -61,7 +61,7 @@ sim-laravel/
 ### 任务结构
 ```json
 {
-  "id": "SIM_Feature_001",
+  "id": "Feature_001",
   "category": "controller",        // controller/migration/model/test/documentation 等
   "complexity": "medium",          // simple/medium/complex
   "description": "实现 SIM 列表查询接口",
@@ -281,7 +281,7 @@ python3 .harness/scripts/artifacts.py clean --days 7
 ```bash
 # 使用工具创建新任务（推荐）
 python3 .harness/scripts/task_file_storage.py create \
-  --id SIM_New_Feature_001 \
+  --id Feature_001 \
   --category controller \
   --complexity medium \
   --description "实现新功能" \
@@ -291,9 +291,9 @@ python3 .harness/scripts/task_file_storage.py create \
 或者手动创建：
 ```bash
 # 在 tasks/pending/ 目录创建任务文件
-cat > .harness/tasks/pending/SIM_New_Feature_001.json <<EOF
+cat > .harness/tasks/pending/Feature_001.json <<EOF
 {
-  "id": "SIM_New_Feature_001",
+  "id": "Feature_001",
   "category": "controller",
   "complexity": "medium",
   "description": "实现新功能",
@@ -414,7 +414,7 @@ python3 .harness/scripts/task_file_storage.py rebuild-index
 ```bash
 # 简单任务 - 无需 validation
 python3 .harness/scripts/add_task.py \
-  --id SIM_Simple_001 \
+  --id Feature_001 \
   --category feature \
   --desc "实现基础功能" \
   --priority P2 \
@@ -422,7 +422,7 @@ python3 .harness/scripts/add_task.py \
 
 # 中等任务 - 启用 validation (threshold: 0.6)
 python3 .harness/scripts/add_task.py \
-  --id SIM_Medium_001 \
+  --id Route_001 \
   --category route \
   --desc "注册用户管理路由（10条）" \
   --priority P0 \
@@ -434,7 +434,7 @@ python3 .harness/scripts/add_task.py \
 
 # 复杂任务 - 启用 validation (threshold: 0.8)
 python3 .harness/scripts/add_task.py \
-  --id SIM_Complex_001 \
+  --id Test_001 \
   --category test \
   --desc "运行完整测试套件" \
   --priority P0 \
@@ -449,7 +449,7 @@ python3 .harness/scripts/add_task.py \
 
 ```json
 {
-  "id": "SIM_Complex_001",
+  "id": "Test_001",
   "category": "test",
   "description": "运行完整测试套件",
   "acceptance": [
@@ -670,7 +670,7 @@ python3 .harness/scripts/detect_stage_completion.py \
 
 # 添加新任务
 python3 .harness/scripts/add_task.py \
-  --id SIM_New_001 \
+  --id Feature_001 \
   --category feature \
   --desc "实现新功能" \
   --priority P1 \
@@ -678,7 +678,7 @@ python3 .harness/scripts/add_task.py \
 
 # 添加中等复杂度任务（启用满意度验证）
 python3 .harness/scripts/add_task.py \
-  --id SIM_Route_001 \
+  --id Route_001 \
   --category route \
   --desc "注册用户管理模块路由" \
   --priority P0 \
@@ -690,7 +690,7 @@ python3 .harness/scripts/add_task.py \
 
 # 添加复杂任务（启用满意度验证，高阈值）
 python3 .harness/scripts/add_task.py \
-  --id SIM_Final_001 \
+  --id Test_001 \
   --category feature \
   --desc "项目最终验收" \
   --priority P0 \
@@ -731,4 +731,4 @@ python3 .harness/scripts/task_file_storage.py --action stats
 ---
 
 **最后更新**: 2026-02-26
-**维护者**: SIM-Laravel Team
+**维护者**: 配料表安全检测系统 Team

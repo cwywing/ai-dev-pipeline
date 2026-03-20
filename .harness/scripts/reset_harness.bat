@@ -40,13 +40,24 @@ if exist "artifacts\" rd /s /q "artifacts" 2>nul
 if exist "reports\" rd /s /q "reports" 2>nul
 echo       √ 已清空 artifacts 和 reports 目录
 
-echo [5/6] 重置任务索引...
+echo [5/8] 重置任务索引...
 set /p PROJECT_NAME="请输入项目名称: "
 
 REM 使用Python生成新的task-index.json
-python3 -c "import json; from datetime import datetime; data = {'version': 2, 'storage_mode': 'single_file', 'project': '%PROJECT_NAME%', 'created_at': datetime.now().isoformat(), 'updated_at': datetime.now().isoformat(), 'total_tasks': 0, 'pending': 0, 'completed': 0, 'index': {}}; f = open('task-index.json', 'w', encoding='utf-8'); json.dump(data, f, indent=2, ensure_ascii=False); f.close(); print('√ 已创建新的 task-index.json')"
+python -c "import json; from datetime import datetime; data = {'version': 1, 'storage_mode': 'single_file', 'project': '%PROJECT_NAME%', 'created_at': datetime.now().isoformat(), 'updated_at': datetime.now().isoformat(), 'total_tasks': 0, 'pending': 0, 'completed': 0, 'index': {}, 'modules': {}, 'priorities': {}}; f = open('task-index.json', 'w', encoding='utf-8'); json.dump(data, f, indent=2, ensure_ascii=False); f.close(); print('  √ 已创建新的 task-index.json')"
 
-echo [6/6] 创建必要的目录结构...
+echo [6/8] 初始化知识库...
+if not exist "knowledge" mkdir "knowledge"
+
+REM 创建 contracts.json
+echo {"version": 1, "services": {}} > knowledge\contracts.json
+echo       √ 已创建 knowledge\contracts.json
+
+REM 创建 constraints.json
+echo {"version": 1, "global": [], "by_task": {}} > knowledge\constraints.json
+echo       √ 已创建 knowledge\constraints.json
+
+echo [7/8] 创建必要的目录结构...
 if not exist "tasks\pending" mkdir "tasks\pending"
 for /f "tokens=2 delims==" %%I in ('wmic os get localdatetime /value') do set datetime=%%I
 set year=%datetime:~0,4%
@@ -56,13 +67,25 @@ if not exist "logs\automation\%year%\%month%" mkdir "logs\automation\%year%\%mon
 if not exist "cli-io\sessions" mkdir "cli-io\sessions"
 if not exist "artifacts" mkdir "artifacts"
 if not exist "reports" mkdir "reports"
+if not exist "knowledge" mkdir "knowledge"
 echo       √ 已创建必要的目录
+
+echo [8/8] 验证初始化...
+python -c "import json; f=open('task-index.json','r',encoding='utf-8'); d=json.load(f); print('  √ task-index.json 格式正确'); print('  √ 项目名称:', d.get('project','N/A')); print('  √ 版本:', d.get('version','N/A'))"
+if exist "knowledge\contracts.json" echo   √ knowledge\contracts.json 已创建
+if exist "knowledge\constraints.json" echo   √ knowledge\constraints.json 已创建
 
 echo.
 echo ===================================
 echo    重置完成！
 echo ===================================
 echo 项目名称: %PROJECT_NAME%
+echo.
+echo 已初始化的目录：
+echo   - tasks\pending, tasks\completed  (任务存储)
+echo   - knowledge\                       (全局知识库)
+echo   - artifacts\                       (产出记录)
+echo   - logs\                            (运行日志)
 echo.
 echo 下一步操作：
 echo   1. 使用 add_task.py 创建新任务

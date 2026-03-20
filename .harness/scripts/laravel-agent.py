@@ -26,6 +26,8 @@ def run_command(cmd, description=""):
             shell=True,
             capture_output=True,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             timeout=60
         )
         return result.returncode == 0, result.stdout, result.stderr

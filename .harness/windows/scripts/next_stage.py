@@ -206,6 +206,75 @@ AUTO_EXECUTE_COMMANDS = {
 ENABLE_AUTO_VALIDATION = os.environ.get('ENABLE_AUTO_VALIDATION', 'true').lower() == 'true'
 
 
+def check_dependencies(task_id, task, storage=None):
+    """
+    检查任务依赖是否已满足
+
+    Args:
+        task_id: 任务 ID
+        task: 任务字典
+        storage: TaskFileStorage 实例（可选）
+
+    Returns:
+        tuple: (是否满足依赖, 阻塞的任务ID列表)
+    """
+    depends_on = task.get('depends_on', [])
+
+    if not depends_on:
+        return True, []
+
+    blocked_by = []
+
+    # 检查每个依赖任务
+    for dep_id in depends_on:
+        dep_completed = False
+
+        # 优先使用 TaskFileStorage
+        if storage is not None:
+            # 检查依赖任务是否在 completed 目录
+            completed_dir = storage.harness_dir / 'completed'
+            completed_file = completed_dir / f'{dep_id}.json'
+
+            if completed_file.exists():
+                dep_completed = True
+            else:
+                # 检查是否在 pending 目录且已完成所有阶段
+                dep_task = storage.load_task(dep_id)
+                if dep_task and dep_task.get('passes', False):
+                    dep_completed = True
+                elif dep_task:
+                    # 检查所有阶段是否完成
+                    stages = dep_task.get('stages', {})
+                    all_stages_complete = all(
+                        stages.get(s, {}).get('completed', False)
+                        for s in ['dev', 'test', 'review']
+                    )
+                    if all_stages_complete:
+                        dep_completed = True
+        else:
+            # 回退到旧方式 - 检查 task.json
+            data = load_tasks()
+            for t in data.get('tasks', []):
+                if t['id'] == dep_id:
+                    if t.get('passes', False):
+                        dep_completed = True
+                    else:
+                        # 检查所有阶段是否完成
+                        stages = t.get('stages', {})
+                        all_stages_complete = all(
+                            stages.get(s, {}).get('completed', False)
+                            for s in ['dev', 'test', 'review']
+                        )
+                        if all_stages_complete:
+                            dep_completed = True
+                    break
+
+        if not dep_completed:
+            blocked_by.append(dep_id)
+
+    return len(blocked_by) == 0, blocked_by
+
+
 def get_next_pending_stage():
     """获取下一个待处理的阶段"""
     # 优先使用 TaskFileStorage
@@ -226,6 +295,9 @@ def get_next_pending_stage():
             priority_order = {'P0': 0, 'P1': 1, 'P2': 2, 'P3': 3}
             tasks_sorted = sorted(tasks, key=lambda t: priority_order.get(t.get('priority', 'P2'), 1))
 
+            # Track blocked tasks for reporting
+            blocked_tasks = []
+
             # Find the first task with pending stages
             for task in tasks_sorted:
                 task_id = task['id']
@@ -233,6 +305,17 @@ def get_next_pending_stage():
                 # Skip if task is permanently skipped
                 if task_id in skipped_tasks:
                     continue
+
+                # ═══════════════════════════════════════════════════════════════
+                #                   依赖检查（新增）
+                # ═══════════════════════════════════════════════════════════════
+                deps_satisfied, blocked_by = check_dependencies(task_id, task, storage)
+                if not deps_satisfied:
+                    blocked_tasks.append({
+                        'task_id': task_id,
+                        'blocked_by': blocked_by
+                    })
+                    continue  # 跳过此任务，检查下一个
 
                 # ═══════════════════════════════════════════════════════════════
                 #                   自动执行任务
@@ -328,6 +411,14 @@ def get_next_pending_stage():
                             }
 
             # No pending stages
+            # Report blocked tasks if any
+            if blocked_tasks:
+                info("\n# 部分任务因依赖未满足而被跳过:", file=sys.stderr)
+                for bt in blocked_tasks:
+                    blocked_by_str = ', '.join(bt['blocked_by'])
+                    info(f"#   {bt['task_id']} 等待: {blocked_by_str}", file=sys.stderr)
+                info("", file=sys.stderr)
+
             return None
 
         except FileNotFoundError:
@@ -353,6 +444,9 @@ def get_next_pending_stage():
         priority_order = {'P0': 0, 'P1': 1, 'P2': 2, 'P3': 3}
         tasks_sorted = sorted(data.get('tasks', []), key=lambda t: priority_order.get(t.get('priority', 'P2'), 1))
 
+        # Track blocked tasks for reporting
+        blocked_tasks = []
+
         # Find the first task with pending stages
         for task in tasks_sorted:
             task_id = task['id']
@@ -360,6 +454,17 @@ def get_next_pending_stage():
             # Skip if task is permanently skipped
             if task_id in skipped_tasks:
                 continue
+
+            # ═══════════════════════════════════════════════════════════════
+            #                   依赖检查（新增）
+            # ═══════════════════════════════════════════════════════════════
+            deps_satisfied, blocked_by = check_dependencies(task_id, task, None)
+            if not deps_satisfied:
+                blocked_tasks.append({
+                    'task_id': task_id,
+                    'blocked_by': blocked_by
+                })
+                continue  # 跳过此任务，检查下一个
 
             # ═══════════════════════════════════════════════════════════════
             #                   自动执行任务
@@ -454,6 +559,14 @@ def get_next_pending_stage():
                         }
 
         # No pending stages
+        # Report blocked tasks if any
+        if blocked_tasks:
+            info("\n# 部分任务因依赖未满足而被跳过:", file=sys.stderr)
+            for bt in blocked_tasks:
+                blocked_by_str = ', '.join(bt['blocked_by'])
+                info(f"#   {bt['task_id']} 等待: {blocked_by_str}", file=sys.stderr)
+            info("", file=sys.stderr)
+
         return None
 
     except FileNotFoundError:
@@ -514,6 +627,12 @@ def main():
     info(f"**Current Stage:** {stage.upper()}")
     info(f"**Category:** {task.get('category', 'general')}")
     info(f"**Description:** {task['description']}")
+
+    # 显示依赖信息（新增）
+    depends_on = task.get('depends_on', [])
+    if depends_on:
+        info(f"**Dependencies:** {', '.join(depends_on)} (已完成)")
+
     info("")
 
     # Stage-specific information

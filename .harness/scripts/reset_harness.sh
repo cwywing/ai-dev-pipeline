@@ -72,7 +72,7 @@ import json
 from datetime import datetime
 
 data = {
-    'version': 2,
+    'version': 1,
     'storage_mode': 'single_file',
     'project': '$PROJECT_NAME',
     'created_at': datetime.now().isoformat(),
@@ -80,7 +80,9 @@ data = {
     'total_tasks': 0,
     'pending': 0,
     'completed': 0,
-    'index': {}
+    'index': {},
+    'modules': {},
+    'priorities': {}
 }
 
 with open('task-index.json', 'w', encoding='utf-8') as f:
@@ -91,19 +93,49 @@ EOF
 
 echo -e "   ${GREEN}✓ 已重置 task-index.json${NC}"
 
-# 6. 创建必要的目录结构
-echo -e "${YELLOW}6. 创建必要的目录结构...${NC}"
+# 6. 初始化知识库
+echo -e "${YELLOW}6. 初始化知识库...${NC}"
+mkdir -p knowledge
+
+# 创建 contracts.json
+cat > knowledge/contracts.json << 'EOFCONTRACTS'
+{
+  "version": 1,
+  "services": {}
+}
+EOFCONTRACTS
+
+# 创建 constraints.json
+cat > knowledge/constraints.json << 'EOFCONSTRAINTS'
+{
+  "version": 1,
+  "global": [],
+  "by_task": {}
+}
+EOFCONSTRAINTS
+
+echo -e "   ${GREEN}✓ 已初始化知识库目录${NC}"
+
+# 7. 创建必要的目录结构
+echo -e "${YELLOW}7. 创建必要的目录结构...${NC}"
 mkdir -p tasks/pending
 mkdir -p tasks/completed/$(date +%Y/%m)
 mkdir -p logs/automation/$(date +%Y/%m)
 mkdir -p cli-io/sessions
 mkdir -p artifacts
 mkdir -p reports
+mkdir -p knowledge
 echo -e "   ${GREEN}✓ 已创建必要的目录${NC}"
 
 echo ""
 echo -e "${GREEN}=== 重置完成！===${NC}"
 echo -e "项目名称: ${YELLOW}$PROJECT_NAME${NC}"
+echo ""
+echo "已初始化的目录："
+echo "  - tasks/pending, tasks/completed  (任务存储)"
+echo "  - knowledge/                       (全局知识库)"
+echo "  - artifacts/                       (产出记录)"
+echo "  - logs/                            (运行日志)"
 echo ""
 echo "下一步操作："
 echo "  1. 使用 add_task.py 创建新任务"

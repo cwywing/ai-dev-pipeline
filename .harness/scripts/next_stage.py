@@ -23,7 +23,7 @@ def load_env_file(env_path: str = '.harness/.env'):
     """Load environment variables from .env file"""
     env_file = Path(env_path)
     if env_file.exists():
-        with open(env_file, 'r') as f:
+        with open(env_file, 'r', encoding='utf-8') as f:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith('#') and '=' in line:
@@ -88,6 +88,8 @@ def run_validation_task(task_id, task):
             shell=True,
             capture_output=True,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             timeout=600  # 10分钟超时
         )
 
@@ -202,6 +204,91 @@ VALIDATION_COMMANDS = {
 ENABLE_AUTO_VALIDATION = os.environ.get('ENABLE_AUTO_VALIDATION', 'true').lower() == 'true'
 
 
+def check_dependencies(task_id, task, storage=None):
+    """
+    检查任务依赖是否已满足
+
+    支持两种依赖格式（向后兼容）：
+    - 简单格式: ["Model_001", "Auth_001"]
+    - 结构化格式: [{"id": "Model_001", "reason": "需要用户模型"}, {"id": "Auth_001", "reason": "需要认证逻辑"}]
+
+    Args:
+        task_id: 任务 ID
+        task: 任务字典
+        storage: TaskFileStorage 实例（可选）
+
+    Returns:
+        tuple: (是否满足依赖, 阻塞信息列表)
+               阻塞信息包含: {"id": 任务ID, "reason": 原因}
+    """
+    depends_on = task.get('depends_on', [])
+
+    if not depends_on:
+        return True, []
+
+    blocked_by = []
+
+    # 检查每个依赖任务
+    for dep in depends_on:
+        # 支持两种格式：字符串或字典
+        if isinstance(dep, dict):
+            dep_id = dep.get('id') or dep.get('task_id')
+            dep_reason = dep.get('reason', '未指定原因')
+        else:
+            dep_id = dep
+            dep_reason = None
+
+        dep_completed = False
+
+        # 优先使用 TaskFileStorage
+        if storage is not None:
+            # 检查依赖任务是否在 completed 目录
+            completed_dir = storage.harness_dir / 'completed'
+            completed_file = completed_dir / f'{dep_id}.json'
+
+            if completed_file.exists():
+                dep_completed = True
+            else:
+                # 检查是否在 pending 目录且已完成所有阶段
+                dep_task = storage.load_task(dep_id)
+                if dep_task and dep_task.get('passes', False):
+                    dep_completed = True
+                elif dep_task:
+                    # 检查所有阶段是否完成
+                    stages = dep_task.get('stages', {})
+                    all_stages_complete = all(
+                        stages.get(s, {}).get('completed', False)
+                        for s in ['dev', 'test', 'review']
+                    )
+                    if all_stages_complete:
+                        dep_completed = True
+        else:
+            # 回退到旧方式 - 检查 task.json
+            data = load_tasks()
+            for t in data.get('tasks', []):
+                if t['id'] == dep_id:
+                    if t.get('passes', False):
+                        dep_completed = True
+                    else:
+                        # 检查所有阶段是否完成
+                        stages = t.get('stages', {})
+                        all_stages_complete = all(
+                            stages.get(s, {}).get('completed', False)
+                            for s in ['dev', 'test', 'review']
+                        )
+                        if all_stages_complete:
+                            dep_completed = True
+                    break
+
+        if not dep_completed:
+            blocked_info = {"id": dep_id}
+            if dep_reason:
+                blocked_info["reason"] = dep_reason
+            blocked_by.append(blocked_info)
+
+    return len(blocked_by) == 0, blocked_by
+
+
 def get_next_pending_stage():
     """获取下一个待处理的阶段"""
     # 优先使用 TaskFileStorage
@@ -222,6 +309,9 @@ def get_next_pending_stage():
             priority_order = {'P0': 0, 'P1': 1, 'P2': 2, 'P3': 3}
             tasks_sorted = sorted(tasks, key=lambda t: priority_order.get(t.get('priority', 'P2'), 1))
 
+            # Track blocked tasks for reporting
+            blocked_tasks = []
+
             # Find the first task with pending stages
             for task in tasks_sorted:
                 task_id = task['id']
@@ -229,6 +319,17 @@ def get_next_pending_stage():
                 # Skip if task is permanently skipped
                 if task_id in skipped_tasks:
                     continue
+
+                # ═══════════════════════════════════════════════════════════════
+                #                   依赖检查（新增）
+                # ═══════════════════════════════════════════════════════════════
+                deps_satisfied, blocked_by = check_dependencies(task_id, task, storage)
+                if not deps_satisfied:
+                    blocked_tasks.append({
+                        'task_id': task_id,
+                        'blocked_by': blocked_by
+                    })
+                    continue  # 跳过此任务，检查下一个
 
                 # ═══════════════════════════════════════════════════════════════
                 #                   验证类任务自动执行
@@ -324,6 +425,25 @@ def get_next_pending_stage():
                             }
 
             # No pending stages
+            # Report blocked tasks if any
+            if blocked_tasks:
+                info("\n# 部分任务因依赖未满足而被跳过:", file=sys.stderr)
+                for bt in blocked_tasks:
+                    blocked_parts = []
+                    for b in bt['blocked_by']:
+                        if isinstance(b, dict):
+                            blocked_id = b.get('id', 'unknown')
+                            blocked_reason = b.get('reason', '')
+                            if blocked_reason:
+                                blocked_parts.append(f"{blocked_id} ({blocked_reason})")
+                            else:
+                                blocked_parts.append(blocked_id)
+                        else:
+                            blocked_parts.append(str(b))
+                    blocked_by_str = ', '.join(blocked_parts)
+                    info(f"#   {bt['task_id']} 等待: {blocked_by_str}", file=sys.stderr)
+                info("", file=sys.stderr)
+
             return None
 
         except FileNotFoundError:
@@ -345,6 +465,9 @@ def get_next_pending_stage():
             for f in os.listdir(skip_dir):
                 skipped_tasks.add(f)
 
+        # Track blocked tasks for reporting
+        blocked_tasks = []
+
         # Find the first task with pending stages
         for task in data.get('tasks', []):
             task_id = task['id']
@@ -352,6 +475,17 @@ def get_next_pending_stage():
             # Skip if task is permanently skipped
             if task_id in skipped_tasks:
                 continue
+
+            # ═══════════════════════════════════════════════════════════════
+            #                   依赖检查（新增）
+            # ═══════════════════════════════════════════════════════════════
+            deps_satisfied, blocked_by = check_dependencies(task_id, task, None)
+            if not deps_satisfied:
+                blocked_tasks.append({
+                    'task_id': task_id,
+                    'blocked_by': blocked_by
+                })
+                continue  # 跳过此任务，检查下一个
 
             # ═══════════════════════════════════════════════════════════════
             #                   验证类任务自动执行
@@ -446,6 +580,25 @@ def get_next_pending_stage():
                         }
 
         # No pending stages
+        # Report blocked tasks if any
+        if blocked_tasks:
+            info("\n# 部分任务因依赖未满足而被跳过:", file=sys.stderr)
+            for bt in blocked_tasks:
+                blocked_parts = []
+                for b in bt['blocked_by']:
+                    if isinstance(b, dict):
+                        blocked_id = b.get('id', 'unknown')
+                        blocked_reason = b.get('reason', '')
+                        if blocked_reason:
+                            blocked_parts.append(f"{blocked_id} ({blocked_reason})")
+                        else:
+                            blocked_parts.append(blocked_id)
+                    else:
+                        blocked_parts.append(str(b))
+                blocked_by_str = ', '.join(blocked_parts)
+                info(f"#   {bt['task_id']} 等待: {blocked_by_str}", file=sys.stderr)
+            info("", file=sys.stderr)
+
         return None
 
     except FileNotFoundError:
@@ -506,6 +659,38 @@ def main():
     info(f"**Current Stage:** {stage.upper()}")
     info(f"**Category:** {task.get('category', 'general')}")
     info(f"**Description:** {task['description']}")
+
+    # 显示依赖信息（新增）
+    depends_on = task.get('depends_on', [])
+    if depends_on:
+        dep_parts = []
+        for dep in depends_on:
+            if isinstance(dep, dict):
+                dep_id = dep.get('id') or dep.get('task_id', 'unknown')
+                dep_reason = dep.get('reason', '')
+                if dep_reason:
+                    dep_parts.append(f"{dep_id} ({dep_reason})")
+                else:
+                    dep_parts.append(dep_id)
+            else:
+                dep_parts.append(str(dep))
+        info(f"**Dependencies:** {', '.join(dep_parts)} (已完成)")
+
+        # 显示上下文注入信息
+        context = get_task_context(task_id, task, _get_storage())
+        if context['dependent_artifacts'] or context['dependent_decisions']:
+            info("")
+            info(f"**Context from Dependencies:**")
+            if context['dependent_artifacts']:
+                info(f"  可用产出文件:")
+                for artifact in context['dependent_artifacts']:
+                    info(f"    - {artifact}")
+            if context['dependent_decisions']:
+                info(f"  关键决策记录:")
+                for dec in context['dependent_decisions']:
+                    reason_str = f" ({dec['reason']})" if dec['reason'] else ""
+                    info(f"    - {dec['from']}{reason_str}: {dec['notes'][:100]}{'...' if len(dec['notes']) > 100 else ''}")
+
     info("")
 
     # Stage-specific information
@@ -610,6 +795,69 @@ def get_task_artifacts(task_id):
         return data.get('files', [])
     except:
         return []
+
+
+def get_task_context(task_id, task, storage=None):
+    """
+    获取任务的上下文信息（从依赖任务的产出中提取）
+
+    Args:
+        task_id: 任务 ID
+        task: 任务字典
+        storage: TaskFileStorage 实例（可选）
+
+    Returns:
+        dict: 上下文信息，包含：
+            - dependent_artifacts: 依赖任务的产出文件列表
+            - dependent_decisions: 依赖任务的关键决策（从 notes 中提取）
+    """
+    depends_on = task.get('depends_on', [])
+
+    if not depends_on:
+        return {"dependent_artifacts": [], "dependent_decisions": []}
+
+    artifacts = []
+    decisions = []
+
+    for dep in depends_on:
+        # 支持两种格式
+        if isinstance(dep, dict):
+            dep_id = dep.get('id') or dep.get('task_id')
+            dep_reason = dep.get('reason', '')
+        else:
+            dep_id = dep
+            dep_reason = ''
+
+        # 获取依赖任务的产出
+        dep_artifacts = get_task_artifacts(dep_id)
+        if dep_artifacts:
+            artifacts.extend(dep_artifacts)
+
+        # 获取依赖任务的决策（从任务 notes 中提取）
+        try:
+            if storage is not None:
+                dep_task = storage.load_task(dep_id)
+            else:
+                data = load_tasks()
+                dep_task = None
+                for t in data.get('tasks', []):
+                    if t['id'] == dep_id:
+                        dep_task = t
+                        break
+
+            if dep_task and dep_task.get('notes'):
+                decisions.append({
+                    "from": dep_id,
+                    "reason": dep_reason,
+                    "notes": dep_task['notes']
+                })
+        except:
+            pass
+
+    return {
+        "dependent_artifacts": artifacts,
+        "dependent_decisions": decisions
+    }
 
 
 if __name__ == '__main__':

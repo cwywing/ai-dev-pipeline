@@ -10,7 +10,7 @@
 
 使用示例：
     python3 .harness/scripts/detect_stage_completion.py \
-        --id SIM_Test_Fix_Compatibility_001 \
+        --id Test_001 \
         --stage test
 
 退出码说明：
@@ -262,6 +262,8 @@ class DetectStageCompletion:
                 ['git', 'status', '--porcelain'],
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 timeout=10
             )
 
@@ -573,17 +575,17 @@ def main():
 使用示例:
     # 检测 Test 阶段
     python3 .harness/scripts/detect_stage_completion.py \\
-        --id SIM_Test_Fix_Compatibility_001 \\
+        --id Test_001 \\
         --stage test
 
     # 检测 Review 阶段
     python3 .harness/scripts/detect_stage_completion.py \\
-        --id SIM_Test_Fix_Compatibility_001 \\
+        --id Test_001 \\
         --stage review
 
     # 检测 Dev 阶段
     python3 .harness/scripts/detect_stage_completion.py \\
-        --id SIM_Foundation_001 \\
+        --id Infra_001 \\
         --stage dev
 
 退出码:

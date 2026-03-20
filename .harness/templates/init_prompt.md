@@ -43,6 +43,10 @@ rm -rf .harness/cli-io/sessions/*
 echo "清空产出记录..."
 rm -rf .harness/artifacts/*
 rm -rf .harness/reports/*
+
+# 5. 清空知识库（保留目录结构）
+echo "清空知识库..."
+rm -rf .harness/knowledge/*
 ```
 
 **验证**：
@@ -60,6 +64,7 @@ ls .harness/task-index.json 2>/dev/null || echo "task-index.json 已删除"
    - 已删除 X 个待处理任务
    - 已清空运行日志
    - 已重置 CLI 会话
+   - 已清空知识库
 ```
 
 ---
@@ -481,7 +486,53 @@ export function Component({ title }: Props) {
 
 ---
 
-### 步骤 6: 验证 Harness 脚本兼容性
+### 步骤 6: 初始化知识库
+
+**目标**：创建全局知识库目录和初始文件，用于存储接口契约和约束条件。
+
+**创建目录**：
+
+```bash
+mkdir -p .harness/knowledge
+```
+
+**创建接口契约文件**：`.harness/knowledge/contracts.json`
+
+```json
+{
+  "version": 1,
+  "services": {}
+}
+```
+
+**创建约束条件文件**：`.harness/knowledge/constraints.json`
+
+```json
+{
+  "version": 1,
+  "global": [],
+  "by_task": {}
+}
+```
+
+**输出**：
+
+```
+✅ 已初始化知识库
+
+文件:
+- .harness/knowledge/contracts.json (接口契约存储)
+- .harness/knowledge/constraints.json (全局约束存储)
+
+用途:
+- 任务完成时自动同步接口契约
+- 支持跨任务上下文传递
+- 全局约束确保一致性
+```
+
+---
+
+### 步骤 7: 验证 Harness 脚本兼容性
 
 **目标**：检查 `.harness/scripts/*.py` 是否硬编码了技术栈特定路径，如需要则适配。
 
@@ -552,7 +603,7 @@ CONTROLLER_PATH = config['paths']['components']
 
 ---
 
-### 步骤 7: 更新模板提示词
+### 步骤 8: 更新模板提示词
 
 **目标**：根据技术栈更新 `templates/dev_prompt.md`、`templates/test_prompt.md`、`templates/review_prompt.md`。
 
@@ -629,7 +680,7 @@ npm test $TEST_FILE
 
 ---
 
-### 步骤 8: 创建验收标准示例
+### 步骤 9: 创建验收标准示例
 
 **目标**：在 `project-config.json` 中添加常见任务类型的验收标准模板，方便用户创建任务时参考。
 
@@ -715,7 +766,7 @@ npm test $TEST_FILE
   "laravel_examples": [
     {
       "type": "controller",
-      "id": "SIM_API_001",
+      "id": "API_001",
       "description": "创建用户列表接口",
       "acceptance": [
         "app/Http/Controllers/Api/App/UserController.php 存在",
@@ -762,38 +813,43 @@ python3 .harness/scripts/add_task.py \
               Harness 初始化完成
 ═══════════════════════════════════════════════════════════
 
-✅ 步骤 1/8: 清空历史数据
+✅ 步骤 1/9: 清空历史数据
    - 已删除 3 个旧任务
    - 已重置环境
+   - 已清空知识库
 
-✅ 步骤 2/8: 识别技术栈
+✅ 步骤 2/9: 识别技术栈
    - 语言: TypeScript
    - 框架: React
    - 工具链: Vite + Vitest + ESLint
 
-✅ 步骤 3/8: 检查本地环境
+✅ 步骤 3/9: 检查本地环境
    - Node.js v20.11.0 ✅
    - npm 10.2.0 ✅
    - 所有必需工具已就绪
 
-✅ 步骤 4/8: 生成项目配置
+✅ 步骤 4/9: 生成项目配置
    - 文件: .harness/project-config.json
    - 路径映射已配置
    - 命令映射已配置
 
-✅ 步骤 5/8: 更新 CLAUDE.md
+✅ 步骤 5/9: 更新 CLAUDE.md
    - 已创建 React + TypeScript 规范文档
 
-✅ 步骤 6/8: 验证脚本兼容性
+✅ 步骤 6/9: 初始化知识库
+   - .harness/knowledge/contracts.json (接口契约)
+   - .harness/knowledge/constraints.json (全局约束)
+
+✅ 步骤 7/9: 验证脚本兼容性
    - 已修改 2 个脚本
    - 替换 3 处硬编码路径
 
-✅ 步骤 7/8: 更新模板提示词
+✅ 步骤 8/9: 更新模板提示词
    - dev_prompt.md (12 处替换)
    - test_prompt.md (8 处替换)
    - review_prompt.md (6 处替换)
 
-✅ 步骤 8/8: 创建验收标准示例
+✅ 步骤 9/9: 创建验收标准示例
    - 6 个任务模板示例
    - 文件: .harness/examples/task_examples.json
 
@@ -826,6 +882,7 @@ python3 .harness/scripts/add_task.py \
 
 - 项目配置: .harness/project-config.json
 - 开发规范: CLAUDE.md
+- 知识库: .harness/knowledge/
 - 任务示例: .harness/examples/task_examples.json
 - 模板文件: .harness/templates/*.md
 

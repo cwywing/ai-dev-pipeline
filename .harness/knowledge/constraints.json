@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "updated_at": null,
+  "global": [
+    "所有 API 必须使用 API Resource 格式化响应",
+    "所有验证必须使用 FormRequest",
+    "业务逻辑必须在 Service 层，Controller 保持精简",
+    "使用 DatabaseTransactions trait 进行测试",
+    "禁止在 Controller 中直接访问 Model"
+  ],
+  "per_module": {}
+}

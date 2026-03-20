@@ -160,7 +160,7 @@ def check_dependencies() -> bool:
 
     # 检查 Python
     try:
-        subprocess.run([PYTHON_CMD, "--version"], capture_output=True, check=True)
+        subprocess.run([PYTHON_CMD, "--version"], capture_output=True, check=True, encoding='utf-8')
     except Exception:
         log_error(f"{PYTHON_CMD} 未安装或不可用")
         return False
@@ -320,6 +320,8 @@ except Exception as e:
             [PYTHON_CMD, "-c", code],
             capture_output=True,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             cwd=str(PROJECT_ROOT)
         )
         return result.stdout.strip()
@@ -351,6 +353,8 @@ except Exception as e:
             [PYTHON_CMD, "-c", code],
             capture_output=True,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             cwd=str(PROJECT_ROOT)
         )
         return result.stdout.strip() or "（暂无测试结果）"
@@ -377,6 +381,8 @@ except Exception as e:
             [PYTHON_CMD, "-c", code],
             capture_output=True,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             cwd=str(PROJECT_ROOT)
         )
         return result.stdout.strip() or "unknown"
@@ -391,6 +397,138 @@ def get_hard_timeout(complexity: str) -> int:
         "complex": 1800,  # 30分钟
     }
     return timeouts.get(complexity, 900)
+
+
+def get_dependency_context(task_id: str) -> str:
+    """
+    获取依赖任务的上下文信息
+
+    Args:
+        task_id: 当前任务 ID
+
+    Returns:
+        str: 格式化的依赖上下文字符串
+    """
+    # 获取依赖任务列表
+    code = f'''
+import sys
+import json
+sys.path.insert(0, '.harness/windows/scripts')
+from task_utils import load_tasks
+try:
+    data = load_tasks()
+    for task in data['tasks']:
+        if task['id'] == '{task_id}':
+            deps = task.get('depends_on', [])
+            if deps:
+                print(json.dumps(deps))
+            break
+except Exception as e:
+    print('[]', file=sys.stderr)
+'''
+    try:
+        result = subprocess.run(
+            [PYTHON_CMD, "-c", code],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            cwd=str(PROJECT_ROOT)
+        )
+        depends_on = json.loads(result.stdout.strip() or '[]')
+    except:
+        depends_on = []
+
+    if not depends_on:
+        return ""
+
+    context_parts = []
+    context_parts.append("# ═══════════════════════════════════════════════════════════════")
+    context_parts.append("#                    DEPENDENCY CONTEXT                          ")
+    context_parts.append("#                    依赖任务上下文信息                          ")
+    context_parts.append("# ═══════════════════════════════════════════════════════════════")
+    context_parts.append("")
+    context_parts.append(f"**当前任务依赖:** {', '.join(depends_on)}")
+    context_parts.append("")
+    context_parts.append("以下是依赖任务的产出、设计决策和接口契约，请参考：")
+    context_parts.append("")
+
+    # 加载每个依赖任务的信息
+    for dep_id in depends_on:
+        # 加载产出文件
+        artifact_file = HARNESS_DIR / "artifacts" / f"{dep_id}.json"
+        if artifact_file.exists():
+            try:
+                with open(artifact_file, 'r', encoding='utf-8') as f:
+                    artifact = json.load(f)
+
+                context_parts.append(f"## 依赖任务: {dep_id}")
+                context_parts.append("")
+
+                # 显示产出文件
+                files = artifact.get('files', [])
+                if files:
+                    context_parts.append("**产出文件:**")
+                    for f in files:
+                        context_parts.append(f"  - {f}")
+                    context_parts.append("")
+
+                # 显示设计决策
+                design_decisions = artifact.get('design_decisions', [])
+                if design_decisions:
+                    context_parts.append("**设计决策:**")
+                    for dd in design_decisions:
+                        if isinstance(dd, dict):
+                            context_parts.append(f"  - {dd.get('decision', dd)}")
+                        else:
+                            context_parts.append(f"  - {dd}")
+                    context_parts.append("")
+
+                # 显示接口契约
+                interface_contracts = artifact.get('interface_contracts', [])
+                if interface_contracts:
+                    context_parts.append("**接口契约:**")
+                    for ic in interface_contracts:
+                        if isinstance(ic, dict):
+                            params_str = ', '.join(ic.get('params', []))
+                            context_parts.append(f"  - {ic.get('service')}::{ic.get('method')}({params_str}) -> {ic.get('returns')}")
+                        else:
+                            context_parts.append(f"  - {ic}")
+                    context_parts.append("")
+
+                # 显示约束条件
+                constraints = artifact.get('constraints', [])
+                if constraints:
+                    context_parts.append("**约束条件:**")
+                    for c in constraints:
+                        context_parts.append(f"  - {c}")
+                    context_parts.append("")
+
+            except Exception as e:
+                context_parts.append(f"  (无法读取任务 {dep_id} 的产出: {e})")
+                context_parts.append("")
+
+    # 加载全局约束
+    constraints_file = HARNESS_DIR / "knowledge" / "constraints.json"
+    if constraints_file.exists():
+        try:
+            with open(constraints_file, 'r', encoding='utf-8') as f:
+                constraints_data = json.load(f)
+
+            global_constraints = constraints_data.get('global', [])
+            if global_constraints:
+                context_parts.append("## 全局约束条件")
+                context_parts.append("")
+                context_parts.append("**必须遵循:**")
+                for c in global_constraints:
+                    context_parts.append(f"  - {c}")
+                context_parts.append("")
+        except:
+            pass
+
+    context_parts.append("")
+
+    return '\n'.join(context_parts)
 
 def clean_duplicate_migrations() -> None:
     """清理重复的迁移文件"""
@@ -502,6 +640,20 @@ def main():
 
         log_verbose(f"任务 ID: {current_task_id}")
         log_verbose(f"当前阶段: {current_stage}")
+
+        # 验证解析结果
+        if not current_task_id or not current_stage:
+            log_error("解析任务 ID 或阶段失败，跳过此迭代")
+            log_error(f"原始输出: {stage_output}")
+            time.sleep(LOOP_SLEEP)
+            continue
+
+        # 验证阶段名称有效性
+        valid_stages = ['dev', 'test', 'review', 'validation']
+        if current_stage not in valid_stages:
+            log_error(f"无效的阶段名称: {current_stage}，有效值: {valid_stages}")
+            time.sleep(LOOP_SLEEP)
+            continue
 
         # 检查是否已跳过
         skip_file = skip_dir / current_task_id
@@ -705,6 +857,12 @@ for task in data['tasks']:
                 log_error(f"读取 CLAUDE.md 失败: {e}")
         else:
             prompt_parts.append("[WARNING] CLAUDE.md not found in project root")
+
+        # 获取依赖上下文（新增）
+        dependency_context = get_dependency_context(current_task_id)
+        if dependency_context:
+            prompt_parts.append("")
+            prompt_parts.append(dependency_context)
 
         prompt_parts.extend([
             "",
@@ -912,6 +1070,7 @@ for task in data['tasks']:
                                 ["git", "status", "--porcelain"],
                                 capture_output=True,
                                 text=True,
+                                encoding='utf-8',
                                 cwd=str(PROJECT_ROOT)
                             )
                             git_files = ' '.join([
@@ -1124,6 +1283,8 @@ sys.exit(2)
             result = subprocess.run(
                 [PYTHON_CMD, "-c", code],
                 capture_output=True,
+                encoding='utf-8',
+                errors='replace',
                 cwd=str(PROJECT_ROOT)
             )
 
@@ -1149,13 +1310,17 @@ for task in data['tasks']:
                         [PYTHON_CMD, "-c", code],
                         capture_output=True,
                         text=True,
+                        encoding='utf-8',
+                        errors='replace',
                         cwd=str(PROJECT_ROOT)
                     )
                     task_desc = result.stdout.strip()
 
                     try:
                         subprocess.run(["git", "add", "-A", "."],
-                                      capture_output=True, cwd=str(PROJECT_ROOT))
+                                      capture_output=True,
+                                      encoding='utf-8',
+                                      cwd=str(PROJECT_ROOT))
 
                         # 清理提交信息
                         clean_task_desc = re.sub(r' \(三阶段质量保证通过\)', '', task_desc).strip()
@@ -1164,6 +1329,7 @@ for task in data['tasks']:
                             ["git", "commit", "-m", f"{current_task_id}: {clean_task_desc}"],
                             capture_output=True,
                             text=True,
+                            encoding='utf-8',
                             cwd=str(PROJECT_ROOT)
                         )
 

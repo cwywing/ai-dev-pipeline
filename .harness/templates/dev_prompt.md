@@ -33,9 +33,11 @@ python3 .harness/scripts/harness-tools.py --action mark-stage --id {TASK_ID} --s
 ```bash
 # 示例1: 创建了新文件（必须列出所有文件）
 python3 .harness/scripts/harness-tools.py --action mark-stage --id {TASK_ID} --stage dev \
-  --files app/Http/Controllers/Api/Admin/UserController.php \
-         app/Http/Requests/UserListRequest.php \
-         tests/Feature/Api/Admin/UserListTest.php
+  --files app/controller/Api/Admin/UserController.php \
+         app/service/UserService.php \
+         app/repositories/UserRepository.php \
+         app/validate/UserValidate.php \
+         tests/Feature/Api/Admin/UserTest.php
 
 # 示例2: 仅修改了现有文件（使用 --files 但不提供参数）
 python3 .harness/scripts/harness-tools.py --action mark-stage --id {TASK_ID} --stage dev --files
@@ -62,13 +64,14 @@ python3 .harness/scripts/harness-tools.py --action mark-stage --id {TASK_ID} --s
 ## 🎯 核心要求（必须严格遵守）
 
 ### 1. 遵循开发规范
-**以上方的 System Instructions (CLAUDE.md) 为唯一权威标准**，你必须：
-  - ✅ 严格按照 CLAUDE.md 中的 Laravel 规范编写代码
-  - ✅ 遵循 TDD（测试驱动开发）流程
-  - ✅ 使用 API Resources 格式化输出（禁止直接返回 Array）
-  - ✅ 使用 FormRequest 验证输入（禁止在 Controller 中验证）
+**以 CLAUDE.md 中的 ThinkPHP 8 规范为唯一权威标准**，你必须：
+  - ✅ **严格按照 CLAUDE.md 中的 ThinkPHP 8 规范编写代码**
+  - ✅ **遵循分层架构规范**：Controller → Service → Repository → Model → Validate
+  - ✅ **遵循路由顺序规范**：在 route/app.php 中按模块顺序定义路由
+  - ✅ 使用 Validate 验证器验证输入（禁止在 Controller 中验证）
   - ✅ 业务逻辑下沉到 Service 层（Controller 保持精简）
-  - ✅ 使用 DatabaseTransactions trait（禁止 RefreshDatabase）
+  - ✅ 数据访问封装在 Repository 层（禁止 Controller 直接访问 Model）
+  - ✅ 使用 BaseController 的 success/error 方法返回响应（禁止直接返回数组）
 
 ### 2. 完成标准
 确保满足当前任务的所有 **Acceptance Criteria（验收标准）**
@@ -96,19 +99,57 @@ python3 .harness/scripts/harness-tools.py --action mark-stage --id {TASK_ID} --s
 
 ## 🚀 执行流程
 
+### 步骤 0: 阅读开发规范 ⚠️⚠️⚠️
+**在开始任何开发之前，必须先完整阅读 CLAUDE.md 文件**：
+  - ✅ 理解 ThinkPHP 8 项目结构
+  - ✅ 理解分层架构规范：Controller → Service → Repository → Model → Validate
+  - ✅ 理解路由定义规范（route/app.php）
+  - ✅ 理解响应格式规范
+  - ✅ 理解禁止事项
+
 ### 步骤 1: 分析与规划 (Plan) ⚠️
 
 **在写任何代码之前，必须先完成以下分析：**
 
 #### 1.1 确定端点类型
 分析当前任务属于哪个端：
-- **App 端** (C端用户): Prefix `/api/v1/app/...`, Controllers 在 `app/Http/Controllers/Api/App/`
-- **Admin 端** (后台管理): Prefix `/api/v1/admin/...`, Controllers 在 `app/Http/Controllers/Api/Admin/`
+- **App 端** (C端用户): Prefix `/api/v1/app/...`, Controllers 在 `app/controller/Api/App/`
+- **Admin 端** (后台管理): Prefix `/api/v1/admin/...`, Controllers 在 `app/controller/Api/Admin/`
 
-#### 1.2 阅读相关文档
+#### 1.2 遵循路由顺序规范 ⚠️
+**路由定义必须在 route/app.php 中按照规范顺序**：
+1. Admin 端路由组（`Route::group('api/v1/admin', ...)`)
+2. App 端路由组（`Route::group('api/v1/app', ...)`)
+3. 路由定义格式：`Route::{method}('uri', '控制器路径/方法')`
+4. 示例：`Route::get('users', 'Api.Admin.User/list')`
+
+#### 1.3 遵循分层架构规范 ⚠️
+**严格按照以下分层架构实现功能**：
+```
+请求流程：
+Request → Controller → Validate (验证输入)
+         ↓
+       Service (业务逻辑)
+         ↓
+       Repository (数据访问)
+         ↓
+       Model (数据模型)
+         ↓
+       Response
+```
+
+**必须创建的文件**（按顺序）：
+1. Model (`app/models/xxx.php`)
+2. Repository (`app/repositories/xxxRepository.php`)
+3. Service (`app/service/xxxService.php`)
+4. Validate (`app/validate/xxxValidate.php`)
+5. Controller (`app/controller/Api/Admin/xxxController.php` 或 `App/xxxController.php`)
+6. 路由定义 (`route/app.php`)
+
+#### 1.4 阅读相关文档
 检索 `docs/` 目录下与当前任务相关的业务文档（PRD、数据字典等）
 
-#### 1.3 编写实现计划
+#### 1.5 编写实现计划
 用自然语言简述你的实现计划，包含：
 - 需要创建/修改哪些文件
 - 路由 URL 和 HTTP Method
@@ -119,16 +160,26 @@ python3 .harness/scripts/harness-tools.py --action mark-stage --id {TASK_ID} --s
 ```
 实现计划：
 - 端点类型：Admin 端
-- 创建文件：UserController.php, UserListRequest.php, UserResource.php
-- 路由：GET /api/v1/admin/users (列表), POST /api/v1/admin/users (创建)
-- 入参：name, email, password (UserListRequest 验证)
-- 出参：UserResource 格式
-- 依赖：复用 UserService 的 getList 方法
+- 创建文件：
+  1. app/models/User.php (数据模型)
+  2. app/repositories/UserRepository.php (数据访问层)
+  3. app/service/UserService.php (业务逻辑层)
+  4. app/validate/UserValidate.php (验证器)
+  5. app/controller/Api/Admin/UserController.php (控制器)
+- 路由定义（在 route/app.php）：
+  - Route::get('users', 'Api.Admin.User/list')
+  - Route::post('users', 'Api.Admin.User/create')
+- 入参：username, password, phone, email (UserValidate 验证)
+- 出参：统一响应格式 { code, message, data }
+- 依赖：复用 UserService 的 getUserList 方法
 ```
 
 ### 步骤 2: 实现功能
 按照验收标准实现核心功能，确保：
-- 文件结构符合 Laravel 规范
+- **文件结构符合 ThinkPHP 8 规范**（参考 CLAUDE.md 目录结构）
+- **分层架构严格遵守**：Controller → Service → Repository → Model
+- **路由定义在 route/app.php**，遵循路由顺序规范
+- **验证器在 app/validate/**，使用 Validate 类和场景验证
 - 代码逻辑清晰正确
 - 基本的错误处理
 
@@ -141,15 +192,15 @@ python3 .harness/scripts/harness-tools.py --action mark-stage --id {TASK_ID} --s
 运行以下命令确保代码可运行：
 
 ```bash
-# 代码风格检查
-./vendor/bin/pint
+# 代码风格检查（如有配置）
+# php think cs:check 或其他代码风格工具
 
 # 运行相关测试（关闭 Xdebug 避免噪音）
 echo "🧪 查找并运行相关测试..."
 TEST_FILE=$(find tests/ -name "*Test.php" -type f 2>/dev/null | head -1)
 if [ -n "$TEST_FILE" ] && [ -f "$TEST_FILE" ]; then
     echo "📝 运行测试: $TEST_FILE"
-    php8 -d xdebug.mode=off artisan test $TEST_FILE 2>&1 | grep -v "WARN\|deprecated\|Xdebug"
+    php8 -d xdebug.mode=off vendor/bin/phpunit $TEST_FILE 2>&1 | grep -v "WARN\|deprecated\|Xdebug"
 else
     echo "⚠️  未找到测试文件或跳过测试执行"
 fi
@@ -173,8 +224,9 @@ python3 .harness/scripts/harness-tools.py --action mark-stage --id {TASK_ID} --s
 ```bash
 # 创建了新文件
 python3 .harness/scripts/harness-tools.py --action mark-stage --id {TASK_ID} --stage dev \
-  --files app/Http/Controllers/Api/Admin/UserController.php \
-         tests/Feature/Api/Admin/UserListTest.php
+  --files app/controller/Api/Admin/UserController.php \
+         app/service/UserService.php \
+         tests/Feature/Api/Admin/UserTest.php
 
 # 仅修改文件
 python3 .harness/scripts/harness-tools.py --action mark-stage --id {TASK_ID} --stage dev --files
