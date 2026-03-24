@@ -1,0 +1,42 @@
+{
+  "agent_cpu": {
+    "enabled": false,
+    "mode": "hybrid",
+    "description": "Agent CPU 集成配置",
+    "options": {
+      "enable_self_healing": true,
+      "enable_human_review": true,
+      "enable_knowledge_base": true,
+      "auto_sync_on_success": true,
+      "max_retries": 3,
+      "sandbox": true
+    },
+    "human_review": {
+      "architecture_review_threshold": 3,
+      "auto_approve_test": false
+    },
+    "knowledge_base": {
+      "sync_on_success": true,
+      "similarity_threshold": 0.7
+    }
+  },
+  "prompts": {
+    "dev_agent": {
+      "use_agent_cpu": false,
+      "template_file": "dev_prompt.md",
+      "agent_cpu_template_file": "dev_prompt_agent_cpu.md"
+    }
+  },
+  "builtins": {
+    "llmcall": {
+      "default_temperature": 0.3,
+      "default_model": "claude-3-5-sonnet-20241022",
+      "timeout": 60000
+    },
+    "agentcall": {
+      "default_temperature": 0.7,
+      "timeout": 120000,
+      "max_retries": 2
+    }
+  }
+}
