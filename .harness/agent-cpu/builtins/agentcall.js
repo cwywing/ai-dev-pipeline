@@ -283,13 +283,3 @@ export async function agentcallWithRetry(context, prompt, opts = {}) {
   );
 }
 
-/**
- * 错误类
- */
-export class AgentCallError extends Error {
-  constructor(message, details = {}) {
-    super(message);
-    this.name = 'AgentCallError';
-    this.details = details;
-  }
-}

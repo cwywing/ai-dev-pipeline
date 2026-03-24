@@ -1,6 +1,6 @@
 {
   "agent_cpu": {
-    "enabled": false,
+    "enabled": true,
     "mode": "hybrid",
     "description": "Agent CPU 集成配置",
     "options": {
@@ -22,9 +22,9 @@
   },
   "prompts": {
     "dev_agent": {
-      "use_agent_cpu": false,
-      "template_file": "dev_prompt.md",
-      "agent_cpu_template_file": "dev_prompt_agent_cpu.md"
+      "use_agent_cpu": true,
+      "template_file": "dev_prompt_agent_cpu.md",
+      "legacy_template_file": "dev_prompt.md"
     }
   },
   "builtins": {

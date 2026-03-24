@@ -50,3 +50,11 @@ export class LLMCallError extends Error {
     this.llmResponse = llmResponse;
   }
 }
+
+export class AgentCallError extends Error {
+  constructor(message, details = {}) {
+    super(message);
+    this.name = 'AgentCallError';
+    this.details = details;
+  }
+}

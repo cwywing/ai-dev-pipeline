@@ -9,7 +9,7 @@
  * 3. 自愈：如果执行出错，LLM 会捕获错误日志，自动修改代码并重新执行
  */
 
-import { vm } from 'vm';
+import vm from 'vm';
 import { ScopeManager, globalScopeManager } from './scope.js';
 import { SelfHealingEngine, globalSelfHealingEngine } from './self-healing.js';
 import { knowledgeBase } from './knowledge-base.js';
@@ -381,11 +381,11 @@ ${this.executionLog.slice(-5).map(e => `- ${e.message}`).join('\n')}
         taskId: this.currentTask,
         category: context.category || 'general',
         flowCode: typeof script === 'string' ? script : '[Function]',
-        artifacts: result.artifacts,
-        decisions: result.decisions,
+        artifacts: (result && result.artifacts) || [],
+        decisions: (result && result.decisions) || [],
         metadata: {
-          duration: result.duration,
-          scope: result.scope
+          duration: result?.duration || 0,
+          scope: result?.scope
         }
       });
 

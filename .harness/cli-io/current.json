@@ -1,8 +1,10 @@
 {
-  "session_id": "20260317_154951_52440",
-  "task_id": "SIM_Model_003",
+  "session_id": "20260320_143345_81752",
+  "task_id": "SIM_Arch_Status_Enum_104",
   "stage": "review",
-  "start_time": "2026-03-17T15:49:51.084232",
-  "prompt_file": "C:\\Users\\SSCN13~1\\AppData\\Local\\Temp\\tmpfg5j5sxc.txt",
-  "active": true
+  "start_time": "2026-03-20T14:33:45.224614",
+  "end_time": "2026-03-20T14:35:27.479767",
+  "exit_code": 0,
+  "completed": true,
+  "active": false
 }

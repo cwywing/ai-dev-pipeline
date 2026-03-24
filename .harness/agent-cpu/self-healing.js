@@ -299,28 +299,6 @@ export class SelfHealingEngine {
   }
 }
 
-/**
- * 自定义错误类
- */
-export class AssertionError extends Error {
-  constructor(message, result) {
-    super(message);
-    this.name = 'AssertionError';
-    this.result = result;
-  }
-}
-
-/**
- * 自愈耗尽错误
- */
-export class SelfHealingError extends Error {
-  constructor(message, originalError, errorLog) {
-    super(message);
-    this.name = 'SelfHealingError';
-    this.originalError = originalError;
-    this.errorLog = errorLog;
-  }
-}
 
 // 导出单例
 export const globalSelfHealingEngine = new SelfHealingEngine();
