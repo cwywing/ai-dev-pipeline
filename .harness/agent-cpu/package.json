@@ -1,0 +1,23 @@
+{
+  "name": "ai-dev-pipeline-agent-cpu",
+  "version": "1.0.0",
+  "description": "Agent CPU Runtime for AI Dev Pipeline",
+  "type": "module",
+  "main": "runtime.js",
+  "scripts": {
+    "test": "node test/runtime.test.js",
+    "example": "node examples/basic-flow.js"
+  },
+  "keywords": [
+    "agent",
+    "cpu",
+    "ai",
+    "automation"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "vm": "^0.1.0"
+  },
+  "devDependencies": {}
+}
