@@ -117,20 +117,40 @@ export class AgentCPU {
       }
 
       // 使用自愈机制执行
-      const result = await this.selfHealingEngine.executeWithSelfHealing(
+      const scriptResult = await this.selfHealingEngine.executeWithSelfHealing(
         () => this._executeScript(script, context),
         (error, ctx) => this._generateFixScript(error, ctx, script),
         { scope: rootScope, taskId: this.currentTask }
       );
 
-      // 同步到知识库
+      // 检查业务层返回值，如果明确返回 success: false 则视为业务失败
+      const businessSuccess = scriptResult && typeof scriptResult === 'object'
+        ? scriptResult.success !== false
+        : true;
+
+      if (!businessSuccess) {
+        const bizError = scriptResult.error || '业务执行返回失败';
+        this._log('warn', `任务业务层失败: ${bizError}`, { scriptResult });
+        return {
+          success: false,
+          scope: rootScope.serialize(),
+          artifacts: rootScope.artifacts,
+          decisions: rootScope.decisions,
+          issues: rootScope.issues,
+          duration: Date.now() - this.startTime,
+          executionLog: this.executionLog,
+          businessError: bizError
+        };
+      }
+
+      // 同步到知识库（仅业务成功时）
       if (this.config.autoSyncOnSuccess && this.config.enableKnowledgeBase) {
-        await this._syncToKnowledgeBase(script, context, result);
+        await this._syncToKnowledgeBase(script, context, scriptResult);
       }
 
       // 检查是否需要验收审查
       if (this.config.enableHumanReview && context.needsAcceptanceReview) {
-        await this._requestAcceptanceReview(context, result);
+        await this._requestAcceptanceReview(context, scriptResult);
       }
 
       this._log('success', `任务完成: ${this.currentTask}`, {
@@ -170,7 +190,7 @@ export class AgentCPU {
     // 如果是字符串，包装为 async 函数
     let executableScript = script;
     if (typeof script === 'string') {
-      executableScript = `(async function(scope, context) { ${script} })`;
+      executableScript = `(async function(builtins, scope, context) { ${script} })`;
     }
 
     // 创建沙箱上下文
@@ -227,7 +247,7 @@ export class AgentCPU {
         return await script(builtins, scope, context);
       } else {
         const fn = eval(executableScript);
-        return await fn(scope, context);
+        return await fn(builtins, scope, context);
       }
     }
   }
@@ -280,6 +300,11 @@ export class AgentCPU {
         return true;
       },
       readFile: (filePath) => fs.readFile(filePath, 'utf-8'),
+      mkdir: async (dirPath, opts) => {
+        await fs.mkdir(dirPath, opts);
+        this._log('info', `目录已创建: ${dirPath}`);
+        return true;
+      },
 
       // 命令执行
       runCommand: async (command) => {

@@ -298,148 +298,137 @@ def execute_flow(task_id, flow_type='dev', category='general', task_data=None):
 
 
 def get_flow_code(flow_type):
-    """获取流程代码"""
+    """获取流程代码（裸代码体，由 runtime.js 包装为 async function）"""
     if flow_type == 'dev':
         return r'''
-const devFlow = async (builtins, scope, context) => {
-  console.log("[DevFlow] 开始开发流程...");
-  const taskId = context.taskId || 'unknown';
-  const taskDesc = context.task?.description || '未提供';
+console.log("[DevFlow] 开始开发流程...");
+const taskId = context.taskId || 'unknown';
+const taskDesc = context.task?.description || '未提供';
 
-  // 构建 Prompt
-  const prompt = `你是 Dev Agent，按照任务描述编写代码。
+// 构建 Prompt
+const prompt = `你是 Dev Agent，按照任务描述编写代码。
 
 任务描述:
 ${taskDesc}
 
 请直接输出代码，不要多余解释。`;
 
-  console.log("[DevFlow] 调用 LLM...");
+console.log("[DevFlow] 调用 LLM...");
 
-  try {
-    // llmcall 直接返回 content 字符串
-    const llmOutput = await builtins.llmcall(prompt, { model: 'sonnet' }) || '';
-    console.log("[DevFlow] LLM 返回长度:", llmOutput.length);
+try {
+  // llmcall 直接返回 content 字符串
+  const llmOutput = await builtins.llmcall(prompt, { model: 'sonnet' }) || '';
+  console.log("[DevFlow] LLM 返回长度:", llmOutput.length);
 
-    // 提取代码
-    let code = llmOutput;
-    const match = llmOutput.match(/```php\n?([\s\S]*?)```/i);
-    if (match) {
-      code = match[1].trim();
-    }
+  // metacall 断言：确保 LLM 返回了有效内容
+  builtins.metacall(llmOutput.length > 0, "LLM 返回为空代码", "检查 prompt 是否正确传递");
 
-    console.log("[DevFlow] 提取到代码，长度: " + code.length);
-
-    // 保存到工作区
-    const workspaceDir = '/tmp/agent-cpu-workspace/' + taskId;
-    await builtins.mkdir(workspaceDir, { recursive: true });
-    const safeId = taskId.replace(/[^a-zA-Z0-9_]/g, '_');
-    const outputFile = workspaceDir + '/' + safeId + '.php';
-    await builtins.writeFile(outputFile, code, 'utf-8');
-    console.log("[DevFlow] 代码已写入:", outputFile);
-
-    // 注册 artifact 到 scope
-    scope.set('artifacts', [{ path: outputFile, type: 'service' }]);
-
-    return { success: true, code, artifacts: [{ path: outputFile, type: 'service' }] };
-  } catch (e) {
-    console.error("[DevFlow] LLM 调用失败:", e.message);
-    return { success: false, error: e.message };
+  // 提取代码
+  let code = llmOutput;
+  const match = llmOutput.match(/```php\n?([\s\S]*?)```/i);
+  if (match) {
+    code = match[1].trim();
   }
-};
 
-// 执行 DevFlow
-devFlow(builtins, scope, context).then(r => {
-  console.log("\n=== 执行结果 ===");
-  console.log("状态: " + (r?.success !== false ? "成功" : "失败"));
-  if (r?.code) {
-    console.log("生成的代码长度: " + r.code.length);
+  console.log("[DevFlow] 提取到代码，长度: " + code.length);
+
+  // 保存到工作区（使用项目根相对路径）
+  const workspaceDir = '.harness/agent-cpu/workspace/' + taskId;
+  await builtins.mkdir(workspaceDir, { recursive: true });
+  const safeId = taskId.replace(/[^a-zA-Z0-9_]/g, '_');
+  const outputFile = workspaceDir + '/' + safeId + '.php';
+  await builtins.writeFile(outputFile, code);
+  console.log("[DevFlow] 代码已写入:", outputFile);
+
+  // 架构审查触发器：检测高风险操作
+  const highRiskPatterns = [
+    { pattern: /Route::/, label: '路由/接口变更 (Route::)' },
+    { pattern: /Schema::(create|table)\b/, label: '数据库表结构变更 (Schema::create/table)' },
+    { pattern: /DROP\s+TABLE/i, label: '数据库表删除 (DROP TABLE)' },
+    { pattern: /->raw\s*\(/, label: '原生 SQL 注入 (->raw)' },
+    { pattern: /config\s*\(\s*['"]\w+\.php['"]\s*\)/, label: '配置文件写入/修改' }
+  ];
+  const riskDetected = highRiskPatterns
+    .filter(r => r.pattern.test(code))
+    .map(r => r.label);
+
+  let requireReview = false;
+  if (riskDetected.length > 0) {
+    requireReview = true;
+    console.log("\n⚠️  [Human Review Required] 触发架构审查：检测到高风险操作，流水线将挂起等待人工确认。");
+    riskDetected.forEach(r => console.log("    - " + r));
   }
-  process.exit(r?.success !== false ? 0 : 1);
-}).catch(e => {
-  console.error("执行失败:", e.message);
-  process.exit(1);
-});
+
+  return { success: true, code, artifacts: [{ path: outputFile, type: 'service' }], requireReview };
+} catch (e) {
+  console.error("[DevFlow] LLM 调用失败:", e.message);
+  return { success: false, error: e.message };
+}
 '''
     elif flow_type == 'test':
         return r'''
-const testFlow = async (builtins, scope, context) => {
-  const artifacts = context.task?.artifacts || [];
+const artifacts = context.task?.artifacts || [];
 
-  console.log("[TestFlow] 开始测试流程...");
-  console.log("[TestFlow] 找到 " + artifacts.length + " 个文件");
+console.log("[TestFlow] 开始测试流程...");
+console.log("[TestFlow] 找到 " + artifacts.length + " 个文件");
 
-  let issueCount = 0;
+let issueCount = 0;
 
-  // 检查每个文件
-  for (const artifact of artifacts) {
-    if (artifact.path && artifact.path.endsWith(".php")) {
-      console.log("[TestFlow] 检查文件: " + artifact.path);
-      try {
-        const content = await builtins.readFile(artifact.path, "utf-8");
-        console.log("[TestFlow] 文件内容长度: " + content.length);
+// 检查每个文件
+for (const artifact of artifacts) {
+  if (artifact.path && artifact.path.endsWith(".php")) {
+    console.log("[TestFlow] 检查文件: " + artifact.path);
+    try {
+      const content = await builtins.readFile(artifact.path);
+      console.log("[TestFlow] 文件内容长度: " + content.length);
 
-        // 检查硬编码密钥/Token (Hard Rule)
-        if (content.match(/sk_[a-z]+_[a-z0-9]+/i) ||
-            content.match(/TOKEN\s*=\s*['"][^'"]+['"]/i) ||
-            content.match(/SECRET\s*=\s*['"][^'"]+['"]/i) ||
-            content.match(/KEY\s*=\s*['"][^'"]+['"]/i)) {
-          console.log("发现硬编码密钥/Token!");
-          issueCount++;
-        }
-
-        // 检查 SQL 拼接 (Hard Rule)
-        if (content.includes("DB::raw(") ||
-            content.includes("DB::statement(") && content.match(/['\"].*WHERE.*['\"]\s*\./) ||
-            content.match(/UPDATE\s+\w+\s+SET.*['\"]\s*\./i) ||
-            content.match(/SELECT\s+.*FROM.*['\"]\s*\./i)) {
-          console.log("发现 SQL 拼接!");
-          issueCount++;
-        }
-
-        // 检查 eval() 使用 (Hard Rule)
-        if (content.includes("eval(")) {
-          console.log("发现 eval() 使用!");
-          issueCount++;
-        }
-      } catch (e) {
-        console.log("[TestFlow] 读取文件失败: " + e.message);
+      // 检查硬编码密钥/Token (Hard Rule)
+      if (content.match(/sk_[a-z]+_[a-z0-9]+/i) ||
+          content.match(/TOKEN\s*=\s*['"][^'"]+['"]/i) ||
+          content.match(/SECRET\s*=\s*['"][^'"]+['"]/i) ||
+          content.match(/KEY\s*=\s*['"][^'"]+['"]/i)) {
+        console.log("发现硬编码密钥/Token!");
+        issueCount++;
       }
+
+      // 检查 SQL 拼接 (Hard Rule)
+      if (content.includes("DB::raw(") ||
+          content.includes("DB::statement(") && content.match(/['\"].*WHERE.*['\"]\s*\./) ||
+          content.match(/UPDATE\s+\w+\s+SET.*['\"]\s*\./i) ||
+          content.match(/SELECT\s+.*FROM.*['\"]\s*\./i)) {
+        console.log("发现 SQL 拼接!");
+        issueCount++;
+      }
+
+      // 检查 eval() 使用 (Hard Rule)
+      if (content.includes("eval(")) {
+        console.log("发现 eval() 使用!");
+        issueCount++;
+      }
+    } catch (e) {
+      console.log("[TestFlow] 读取文件失败: " + e.message);
     }
   }
+}
 
-  console.log("[TestFlow] 检查完成，发现 " + issueCount + " 个问题");
+console.log("[TestFlow] 检查完成，发现 " + issueCount + " 个问题");
 
-  return { success: true, issueCount };
-};
-
-// 执行 TestFlow
-testFlow(builtins, scope, context).then(r => {
-  console.log("\n=== 执行结果 ===");
-  console.log("状态: " + (r?.success !== false ? "成功" : "失败"));
-  console.log("发现问题数: " + (r?.issueCount || 0));
-  process.exit(r?.success !== false ? 0 : 1);
-}).catch(e => {
-  console.error("执行失败:", e.message);
-  process.exit(1);
-});
+return { success: true, issueCount };
 '''
     elif flow_type == 'review':
         return r'''
-const reviewFlow = async (builtins, scope, context) => {
-  console.log("[ReviewFlow] 开始审查流程...");
-  const artifacts = context.task?.artifacts || [];
+console.log("[ReviewFlow] 开始审查流程...");
+const artifacts = context.task?.artifacts || [];
 
-  // 简单的质量评分
-  let score = 10;
-  if (artifacts.length === 0) {
-    score = 5;
-  }
+// 简单的质量评分
+let score = 10;
+if (artifacts.length === 0) {
+  score = 5;
+}
 
-  console.log("[ReviewFlow] 审查完成，质量评分: " + score + "/10");
+console.log("[ReviewFlow] 审查完成，质量评分: " + score + "/10");
 
-  return { success: true, qualityScore: score };
-};
+return { success: true, qualityScore: score };
 '''
     else:
         return "console.log('Flow type not implemented: " + flow_type + "');"

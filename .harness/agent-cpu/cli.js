@@ -13,6 +13,7 @@ import { AgentCPU, createAgentCPU } from './runtime.js';
 import { humanReviewManager, ReviewResult } from './human-review.js';
 import { knowledgeBase } from './knowledge-base.js';
 import fs from 'fs/promises';
+import path from 'path';
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -66,54 +67,68 @@ async function runCommand() {
   // 读取任务数据
   const taskData = JSON.parse(process.env.TASK_DATA || '{}');
 
-  // 创建内置函数对象
-  const builtins = {
-    // llmcall - LLM 调用
-    llmcall: async (prompt, config = {}) => {
-      const { llmcall: llmFn } = await import('./builtins/llmcall.js');
-      return llmFn(prompt, {}, config);
-    },
-    // readFile - 读取文件
-    readFile: async (filePath, encoding = 'utf-8') => {
-      const { readFile } = await import('fs/promises');
-      return readFile(filePath, encoding);
-    },
-    // writeFile - 写入文件
-    writeFile: async (filePath, content, encoding = 'utf-8') => {
-      const { writeFile } = await import('fs/promises');
-      return writeFile(filePath, content, encoding);
-    },
-    // mkdir - 创建目录
-    mkdir: async (dirPath, options = { recursive: true }) => {
-      const { mkdir } = await import('fs/promises');
-      return mkdir(dirPath, options);
-    }
-  };
+  // 加载约束
+  const constraintsPath = path.resolve('.harness/knowledge/constraints.json');
+  let constraints = [];
+  try {
+    const content = await fs.readFile(constraintsPath, 'utf-8');
+    const data = JSON.parse(content);
+    constraints = data.moat?.hard_rules || [];
+  } catch (e) {}
 
-  // 创建 scope 对象
-  const scope = {
-    _data: {},
-    get(key) { return this._data[key]; },
-    set(key, value) { this._data[key] = value; },
-    getAllVariables() { return { ...this._data }; }
-  };
+  // 创建 Agent CPU 实例（sandbox:false 避免 VM 的 import 问题）
+  const cpu = createAgentCPU({
+    sandbox: false,
+    enableSelfHealing: true,
+    maxRetries: 2,
+    enableKnowledgeBase: false
+  });
 
-  // 创建 context 对象
   const context = {
     taskId,
     category,
     task: taskData,
-    constraints: {}
+    constraints,
+    variables: {}
   };
 
-  // 直接执行脚本，不使用 AgentCPU 的自愈机制
   try {
-    // 使用 AsyncFunction 构造函数以支持顶层 await
-    // 必须显式声明参数名，这样调用时才能传递进去
-    const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-    const scriptFn = new AsyncFunction('builtins', 'scope', 'context', script);
-    await scriptFn(builtins, scope, context);
-    // 脚本内部会自己处理 process.exit
+    const result = await cpu.execute(script, context);
+
+    console.log(`\n=== 执行结果 ===`);
+    console.log(`状态: ${result.success ? '成功' : '失败'}`);
+    if (result.artifacts?.length) {
+      console.log(`产出: ${result.artifacts.length} 个`);
+    }
+    if (result.issues?.length) {
+      console.log(`问题: ${result.issues.length} 个`);
+      result.issues.forEach(i => console.log(`  - ${i.message}`));
+    }
+    console.log(`耗时: ${result.duration}ms`);
+
+    // 成功时自动沉淀经验到知识库（必须有实质性产出才沉淀）
+    if (result.success && result.artifacts?.length > 0) {
+      try {
+        await knowledgeBase.sync({
+          taskId,
+          category,
+          flowCode: script,
+          artifacts: result.artifacts,
+          decisions: result.decisions || [],
+          metadata: {
+            duration: result.duration,
+            scope: result.scope
+          }
+        });
+        console.log(`[KnowledgeBase] 任务执行成功，经验已自动沉淀。`);
+      } catch (kbError) {
+        console.warn(`[KnowledgeBase] 经验沉淀失败: ${kbError.message}`);
+      }
+    } else if (result.success && (!result.artifacts || result.artifacts.length === 0)) {
+      console.warn(`[KnowledgeBase] 跳过沉淀：任务成功但无产出物。`);
+    }
+
+    process.exit(result.success ? 0 : 1);
   } catch (error) {
     console.error('\n执行失败:', error.message);
     process.exit(1);

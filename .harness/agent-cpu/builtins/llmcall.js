@@ -9,7 +9,7 @@ import { LLMCallError } from '../errors.js';
 export const DEFAULT_LLM_CONFIG = {
   model: 'sonnet',
   temperature: 0.3,
-  timeout: 60000,
+  timeout: 300000,
   retries: 2,
   onTokenUsage: null,
 };
@@ -96,7 +96,7 @@ result = subprocess.run(
     capture_output=True,
     text=True,
     encoding='utf-8',
-    timeout=120
+    timeout=300
 )
 sys.stdout.write(result.stdout)
 if result.stderr:
@@ -149,7 +149,7 @@ sys.exit(result.returncode)
       setTimeout(() => {
         proc.kill();
         reject(new Error('LLM 调用超时'));
-      }, config.timeout || 120000);
+      }, config.timeout || 300000);
 
     } else {
       // Unix: 使用 stdin 传递 prompt
@@ -200,7 +200,7 @@ sys.exit(result.returncode)
       setTimeout(() => {
         proc.kill();
         reject(new Error('LLM 调用超时'));
-      }, config.timeout || 120000);
+      }, config.timeout || 300000);
     }
   });
 }
