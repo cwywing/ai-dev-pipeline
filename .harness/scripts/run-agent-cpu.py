@@ -337,12 +337,27 @@ for (const artifact of artifacts) {
       const content = await fs.promises.readFile(artifact.path, "utf-8");
       console.log("[TestFlow] 文件内容长度: " + content.length);
 
-      if (content.includes("sk-admin")) {
-        console.log("发现硬编码 Token!");
+      // 检查硬编码密钥/Token (Hard Rule)
+      if (content.match(/sk_[a-z]+_[a-z0-9]+/i) || // sk_test_xxx, sk_live_xxx
+          content.match(/TOKEN\s*=\s*['"][^'"]+['"]/i) ||
+          content.match(/SECRET\s*=\s*['"][^'"]+['"]/i) ||
+          content.match(/KEY\s*=\s*['"][^'"]+['"]/i)) {
+        console.log("发现硬编码密钥/Token!");
         issueCount++;
       }
-      if (content.includes("DB::raw(")) {
+
+      // 检查 SQL 拼接 (Hard Rule)
+      if (content.includes("DB::raw(") ||
+          content.includes("DB::statement(") && content.match(/['\"].*WHERE.*['\"]\s*\./) ||
+          content.match(/UPDATE\s+\w+\s+SET.*['\"]\s*\./i) ||
+          content.match(/SELECT\s+.*FROM.*['\"]\s*\./i)) {
         console.log("发现 SQL 拼接!");
+        issueCount++;
+      }
+
+      // 检查 eval() 使用 (Hard Rule)
+      if (content.includes("eval(")) {
+        console.log("发现 eval() 使用!");
         issueCount++;
       }
     } catch (e) {
