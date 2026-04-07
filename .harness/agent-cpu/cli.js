@@ -67,6 +67,7 @@ async function runCommand() {
     enableSelfHealing: true,
     enableHumanReview: false,  // CLI 模式默认关闭人工审查
     enableKnowledgeBase: true,
+    sandbox: false,  // CLI 模式禁用沙箱以支持动态 import
     onLog: (entry) => {
       const prefix = {
         info: '[INFO]',

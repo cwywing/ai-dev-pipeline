@@ -199,7 +199,21 @@ export class AgentCPU {
 
     if (this.config.sandbox) {
       // 使用 vm 沙箱执行
-      const vmContext = vm.createContext(sandbox);
+      const vmContext = vm.createContext({
+        ...sandbox,
+        import: async (specifier) => {
+          // 在沙箱中模拟 import
+          if (specifier === './runtime.js' || specifier.endsWith('/runtime.js')) {
+            const { AgentCPU } = await import('./runtime.js');
+            return { createAgentCPU: AgentCPU };
+          }
+          if (specifier === './builtins/llmcall.js' || specifier.endsWith('/llmcall.js')) {
+            return await import('./builtins/llmcall.js');
+          }
+          // 其他模块使用原生 import
+          return await import(specifier);
+        }
+      });
       const scriptInstance = new vm.Script(`(async () => {
         const { ${Object.keys(builtins).join(', ')} } = this;
         ${typeof script === 'string' ? script : ''}
