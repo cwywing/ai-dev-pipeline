@@ -462,6 +462,148 @@ node .harness/agent-cpu/cli.js run --script path/to/script.js --task-id TASK_001
 
 ---
 
+## Agent Loop 自愈架构突破
+
+### 从"自动化脚本"到"自主智能体"的进化
+
+传统 AI Agent 面临的核心问题：
+
+| 问题 | 描述 |
+|------|------|
+| **单步执行** | 一次 LLM 调用完成所有任务，无法自我纠错 |
+| **黑箱执行** | 不知道命令是否成功，不知道错误在哪 |
+| **缺乏感知** | 无法观察运行时状态，无法根据反馈调整 |
+
+**解决方案：Agent Loop（智能体循环）**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Agent Loop 执行模型                            │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│   ┌──────────────┐                                              │
+│   │   写代码      │ ◀──────────────┐                            │
+│   └──────┬───────┘               │                            │
+│          │                       │ (发现错误)                   │
+│          ▼                       │                            │
+│   ┌──────────────┐               │                            │
+│   │   执行代码    │               │                            │
+│   └──────┬───────┘               │                            │
+│          │                       │                            │
+│          ▼                       │                            │
+│   ┌──────────────┐               │                            │
+│   │  观察结果    │ ──────────────┘                            │
+│   └──────────────┘                                          │
+│          │                                                   │
+│          ▼ (成功)                                             │
+│   ┌──────────────┐                                           │
+│   │   完成任务   │                                            │
+│   └──────────────┘                                           │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Tool Use API + History Sanitization
+
+#### 技术选型：Anthropic Tool Use API
+
+采用 Anthropic 的结构化工具调用协议，LLM 输出 JSON 格式的工具调用：
+
+```javascript
+{
+  name: "run_command",
+  input_schema: {
+    type: "object",
+    properties: {
+      command: { type: "string" },
+      description: { type: "string" }
+    }
+  }
+}
+```
+
+#### MiniMax 兼容层 Bug（关键突破）
+
+在接入 MiniMax API 时遇到连环兼容性问题：
+
+| 错误代码 | 问题描述 | 根因 |
+|---------|---------|------|
+| 500 (1033) | tool_result 对象在多轮对话中导致服务器崩溃 | MiniMax 兼容层无法处理复杂嵌套对象 |
+| 400 (2013) | tool_use 后纯文本导致 "tool call result does not follow tool call" | MiniMax 要求严格遵循 tool_use → tool_result 顺序 |
+| 500 (1000) | 迭代 2+ 偶发未知错误 | API 不稳定 |
+
+#### 狸猫换太子（History Sanitization）
+
+**核心思想**：API 请求中保留 `tools` 参数（让 LLM 输出 tool_use），但将历史消息中的 tool_use 块替换为纯文本。
+
+```javascript
+// 1. 保留 tools 参数 - LLM 正常输出 tool_use
+const response = await llmcall(prompt, { tools, messages });
+
+// 2. 历史消息中的 tool_use → 纯文本（狸猫换太子）
+const assistantText = response.content
+  .filter(block => block.type === 'text' || block.type === 'thinking')
+  .map(b => b.text || b.thinking)
+  .join('\n');
+messages.push({ role: 'assistant', content: assistantText || '...' });
+
+// 3. 工具执行结果 → 纯文本（避免 tool_result 兼容性问题）
+const fallbackText = `[系统回传] 你刚才调用的工具已执行完毕...\n` +
+  toolResults.map(tr => `工具: ${tr.tool_use_id}\n状态: ...\n内容:\n${tr.content}`).join('\n\n') +
+  `\n\n请根据上述结果继续执行任务...`;
+messages.push({ role: 'user', content: fallbackText });
+```
+
+### 自愈验证：TEST_AGENT_LOOP_006
+
+任务：让 Agent Loop 自主完成一个 PHP 折扣计算函数，并故意注入语法错误验证自愈能力。
+
+#### 执行结果（6 轮迭代）
+
+| 轮次 | 操作 | 结果 |
+|------|------|------|
+| 1 | `write_file` | 写入 PHP 文件（故意遗漏分号） |
+| 2 | `run_command` | ❌ Parse error: syntax error, unexpected token "return" |
+| 3 | `read_file` | 读取错误文件，定位问题 |
+| 4 | `write_file` | 修复遗漏的分号 |
+| 5 | `run_command` | ✅ exitCode: 0，输出 "折后价: 80 元" |
+| 6 | `finish_task` | 任务完成 |
+
+#### 产出文件
+
+```php
+<?php
+/**
+ * 计算折扣后的价格
+ */
+function calculate_discount($price, $discount)
+{
+    // 计算折扣后的价格
+    $discounted_price = $price * (1 - $discount / 100);
+    return $discounted_price;  // ← 最初遗漏了分号，Agent 自主修复
+}
+
+$original_price = 100;
+$discount_percent = 20;
+$result = calculate_discount($original_price, $discount_percent);
+echo "原价: {$original_price} 元\n";
+echo "折扣: {$discount_percent}%\n";
+echo "折后价: {$result} 元\n";
+```
+
+### Agent Loop 核心能力矩阵
+
+| 能力 | 实现方式 | 状态 |
+|------|---------|------|
+| **自主规划** | while 循环 + finish_task 判断 | ✅ |
+| **工具执行** | tool_use API → run_command/read_file/write_file | ✅ |
+| **错误感知** | exitCode 检测 + 错误日志解析 | ✅ |
+| **自我修复** | 发现错误 → 读取文件 → 修复 → 重试 | ✅ |
+| **上下文保持** | messages 数组累积 + History Sanitization | ✅ |
+| **平台兼容** | Windows 路径自动转换（`\\` vs `/`） | ✅ |
+
+---
+
 ## 性能指标
 
 | 指标 | 单 Agent | AI Dev Pipeline |
