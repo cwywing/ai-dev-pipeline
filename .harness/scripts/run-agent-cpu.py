@@ -301,69 +301,224 @@ def get_flow_code(flow_type):
     """获取流程代码（裸代码体，由 runtime.js 包装为 async function）"""
     if flow_type == 'dev':
         return r'''
-console.log("[DevFlow] 开始开发流程...");
+// ============================================================
+// Dev Flow - Agent Loop with Tool Use
+// ============================================================
+
+const MAX_ITERATIONS = 10;
 const taskId = context.taskId || 'unknown';
 const taskDesc = context.task?.description || '未提供';
+const workspaceDir = `.harness/agent-cpu/workspace/${taskId}`;
 
-// 构建 Prompt
-const prompt = `你是 Dev Agent，按照任务描述编写代码。
+// 定义工具 Schema
+const tools = [
+  {
+    name: 'run_command',
+    description: '执行 shell 命令（如 php -l file.php 检查语法、composer install 安装依赖等）',
+    input_schema: {
+      type: 'object',
+      properties: {
+        command: { type: 'string', description: '要执行的 shell 命令' }
+      },
+      required: ['command']
+    }
+  },
+  {
+    name: 'read_file',
+    description: '读取文件内容',
+    input_schema: {
+      type: 'object',
+      properties: {
+        filePath: { type: 'string', description: '文件路径（相对或绝对）' }
+      },
+      required: ['filePath']
+    }
+  },
+  {
+    name: 'write_file',
+    description: '写入文件内容（会自动创建目录）',
+    input_schema: {
+      type: 'object',
+      properties: {
+        filePath: { type: 'string', description: '文件路径' },
+        content: { type: 'string', description: '文件内容' }
+      },
+      required: ['filePath', 'content']
+    }
+  },
+  {
+    name: 'finish_task',
+    description: '标记任务完成，结束循环',
+    input_schema: {
+      type: 'object',
+      properties: {
+        summary: { type: 'string', description: '任务完成总结' },
+        artifacts: {
+          type: 'array',
+          description: '产出文件列表',
+          items: { type: 'string' }
+        }
+      },
+      required: ['summary', 'artifacts']
+    }
+  }
+];
 
-任务描述:
+// 初始化对话历史
+const messages = [];
+const artifacts = [];
+let finished = false;
+let iteration = 0;
+
+console.log(`[DevFlow] 开始 Agent Loop，任务: ${taskId}`);
+console.log(`[DevFlow] 任务描述: ${taskDesc}`);
+
+// 创建工作区
+await builtins.mkdir(workspaceDir, { recursive: true });
+
+// 构建初始 system prompt
+const systemPrompt = `你是一个自主开发 Agent。你的任务是：
+
 ${taskDesc}
 
-请直接输出代码，不要多余解释。`;
+你可以使用以下工具：
+- run_command: 执行 shell 命令
+- read_file: 读取文件
+- write_file: 写入文件
+- finish_task: 完成任务
 
-console.log("[DevFlow] 调用 LLM...");
+工作流程：
+1. 分析任务需求
+2. 编写代码并保存到 ${workspaceDir}/ 目录
+3. 使用 run_command 检查语法（如 php -l file.php）
+4. 如果有错误，读取文件、修复、重新保存
+5. 确认无误后调用 finish_task
 
-try {
-  // llmcall 直接返回 content 字符串
-  const llmOutput = await builtins.llmcall(prompt, { model: 'sonnet' }) || '';
-  console.log("[DevFlow] LLM 返回长度:", llmOutput.length);
+约束条件：
+${context.constraints?.map(c => `- ${c}`).join('\n') || '- 无特殊约束'}
 
-  // metacall 断言：确保 LLM 返回了有效内容
-  builtins.metacall(llmOutput.length > 0, "LLM 返回为空代码", "检查 prompt 是否正确传递");
+请开始执行。`;
 
-  // 提取代码
-  let code = llmOutput;
-  const match = llmOutput.match(/```php\n?([\s\S]*?)```/i);
-  if (match) {
-    code = match[1].trim();
+// Agent Loop
+while (iteration < MAX_ITERATIONS && !finished) {
+  iteration++;
+  console.log(`\n[DevFlow] === Iteration ${iteration}/${MAX_ITERATIONS} ===`);
+
+  try {
+    // 调用 LLM（传入 tools 和 messages 历史）
+    const response = await builtins.llmcall('', {}, {
+      system: systemPrompt,
+      messages: messages.length > 0 ? messages : [{ role: 'user', content: '请开始执行任务。' }],
+      tools,
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 8192,
+      returnRawResponse: true  // 需要完整响应以提取 tool_use
+    });
+
+    console.log(`[DevFlow] LLM stop_reason: ${response.stop_reason}`);
+
+    // 将 assistant 的回复加入历史
+    messages.push({
+      role: 'assistant',
+      content: response.content
+    });
+
+    // 处理 tool_use
+    if (response.stop_reason === 'tool_use') {
+      const toolUses = response.content.filter(block => block.type === 'tool_use');
+      const toolResults = [];
+
+      for (const toolUse of toolUses) {
+        const { id, name, input } = toolUse;
+        console.log(`[DevFlow] 调用工具: ${name}`, input);
+
+        let result;
+        let isError = false;
+
+        try {
+          switch (name) {
+            case 'run_command':
+              const cmdResult = await builtins.runCommand(input.command);
+              result = `exitCode: ${cmdResult.exitCode}\nstdout:\n${cmdResult.stdout}\nstderr:\n${cmdResult.stderr}`;
+              break;
+
+            case 'read_file':
+              const fileContent = await builtins.readFile(input.filePath);
+              result = fileContent;
+              break;
+
+            case 'write_file':
+              await builtins.writeFile(input.filePath, input.content);
+              artifacts.push(input.filePath);
+              result = `文件已写入: ${input.filePath}`;
+              break;
+
+            case 'finish_task':
+              finished = true;
+              result = `任务完成: ${input.summary}`;
+              if (input.artifacts) {
+                input.artifacts.forEach(f => {
+                  if (!artifacts.includes(f)) artifacts.push(f);
+                });
+              }
+              break;
+
+            default:
+              result = `未知工具: ${name}`;
+              isError = true;
+          }
+        } catch (err) {
+          result = `工具执行失败: ${err.message}`;
+          isError = true;
+        }
+
+        console.log(`[DevFlow] 工具结果 (${name}): ${result.substring(0, 200)}...`);
+
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: id,
+          content: result,
+          is_error: isError
+        });
+      }
+
+      // 将工具执行结果追加到 messages
+      messages.push({
+        role: 'user',
+        content: toolResults
+      });
+
+    } else if (response.stop_reason === 'end_turn') {
+      // LLM 没有调用工具，可能在思考或等待指令
+      console.log('[DevFlow] LLM 未调用工具，继续循环');
+      messages.push({
+        role: 'user',
+        content: '请继续执行任务，使用工具完成开发。'
+      });
+    } else {
+      console.log(`[DevFlow] 未预期的 stop_reason: ${response.stop_reason}`);
+      break;
+    }
+
+  } catch (err) {
+    console.error(`[DevFlow] Iteration ${iteration} 失败:`, err.message);
+    return { success: false, error: err.message };
   }
-
-  console.log("[DevFlow] 提取到代码，长度: " + code.length);
-
-  // 保存到工作区（使用项目根相对路径）
-  const workspaceDir = '.harness/agent-cpu/workspace/' + taskId;
-  await builtins.mkdir(workspaceDir, { recursive: true });
-  const safeId = taskId.replace(/[^a-zA-Z0-9_]/g, '_');
-  const outputFile = workspaceDir + '/' + safeId + '.php';
-  await builtins.writeFile(outputFile, code);
-  console.log("[DevFlow] 代码已写入:", outputFile);
-
-  // 架构审查触发器：检测高风险操作
-  const highRiskPatterns = [
-    { pattern: /Route::/, label: '路由/接口变更 (Route::)' },
-    { pattern: /Schema::(create|table)\b/, label: '数据库表结构变更 (Schema::create/table)' },
-    { pattern: /DROP\s+TABLE/i, label: '数据库表删除 (DROP TABLE)' },
-    { pattern: /->raw\s*\(/, label: '原生 SQL 注入 (->raw)' },
-    { pattern: /config\s*\(\s*['"]\w+\.php['"]\s*\)/, label: '配置文件写入/修改' }
-  ];
-  const riskDetected = highRiskPatterns
-    .filter(r => r.pattern.test(code))
-    .map(r => r.label);
-
-  let requireReview = false;
-  if (riskDetected.length > 0) {
-    requireReview = true;
-    console.log("\n⚠️  [Human Review Required] 触发架构审查：检测到高风险操作，流水线将挂起等待人工确认。");
-    riskDetected.forEach(r => console.log("    - " + r));
-  }
-
-  return { success: true, code, artifacts: [{ path: outputFile, type: 'service' }], requireReview };
-} catch (e) {
-  console.error("[DevFlow] LLM 调用失败:", e.message);
-  return { success: false, error: e.message };
 }
+
+// 循环结束
+if (!finished) {
+  console.warn(`[DevFlow] 达到最大迭代次数 ${MAX_ITERATIONS}，强制结束`);
+}
+
+console.log(`\n[DevFlow] Agent Loop 完成，共 ${iteration} 次迭代`);
+console.log(`[DevFlow] 产出文件: ${artifacts.join(', ')}`);
+
+return {
+  success: true,
+  artifacts: artifacts.map(path => ({ path, type: 'file' })),
+  iterations: iteration
+};
 '''
     elif flow_type == 'test':
         return r'''

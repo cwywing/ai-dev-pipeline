@@ -38,7 +38,11 @@ export async function llmcall(prompt, params = {}, config = {}) {
 
   // 构建 messages 数组
   const messages = [...(llmConfig.messages || [])];
-  messages.push({ role: 'user', content: renderedPrompt });
+
+  // 只有当 prompt 非空时才添加 user 消息
+  if (renderedPrompt.trim()) {
+    messages.push({ role: 'user', content: renderedPrompt });
+  }
 
   const body = {
     model: llmConfig.model,
@@ -54,6 +58,11 @@ export async function llmcall(prompt, params = {}, config = {}) {
   }
 
   const response = await callAnthropicAPI(body, llmConfig.timeout);
+
+  // 如果要求返回原始响应（用于 tool_use 提取）
+  if (llmConfig.returnRawResponse) {
+    return response;
+  }
 
   // 提取文本内容（向后兼容）
   const content = extractTextContent(response);
