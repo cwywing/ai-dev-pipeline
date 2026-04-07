@@ -79,17 +79,24 @@ npm install
 
 ### 配置 API Key
 
-Agent CPU 直接调用 Anthropic Messages API，需要设置密钥：
+Agent CPU 直接调用 Anthropic-compatible API，支持官方 Anthropic 和兼容 Provider（如智谱AI）。
 
 ```bash
 # 方式一：环境变量（推荐）
-export ANTHROPIC_API_KEY=sk-ant-api03-...
+export ANTHROPIC_API_KEY=sk-ant-api03-...          # 官方 Anthropic
+export ANTHROPIC_BASE_URL=https://api.anthropic.com/v1/messages  # 可选
 
-# 方式二：在 .env 文件中（项目根目录或 .harness 目录）
-# ANTHROPIC_API_KEY=sk-ant-api03-...
+# 方式二：智谱AI / 兼容 Provider
+export ANTHROPIC_AUTH_TOKEN=cba06ae1fdea48a6a9dd4217d565b77d...
+export ANTHROPIC_BASE_URL=https://open.bigmodel.cn/api/anthropic
+export ANTHROPIC_AUTH_HEADER=Authorization         # 必需！使用 Bearer Token 格式
+export ANTHROPIC_DEFAULT_SONNET_MODEL=glm-5       # 模型名称
+
+# 超时配置（毫秒）
+export API_TIMEOUT_MS=300000
 ```
 
-> API Key 可从 [Anthropic Console](https://console.anthropic.com/) 获取。
+> API Key 可从 [Anthropic Console](https://console.anthropic.com/) 或对应 Provider 获取。
 
 ### CLI 使用
 

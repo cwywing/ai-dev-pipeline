@@ -1,21 +1,26 @@
 /**
  * llmcall - 确定性任务调用
  *
- * 直接请求 Anthropic Messages API，支持 tool_use、messages 历史和 system prompt。
+ * 直接请求 Anthropic-compatible Messages API，支持 tool_use、messages 历史和 system prompt。
+ * 支持官方 Anthropic API 及兼容 Provider（如 bigmodel.cn / 智谱AI）。
  */
 
 import { LLMCallError } from '../errors.js';
 
 export const DEFAULT_LLM_CONFIG = {
-  model: 'claude-sonnet-4-20250514',
+  // 模型可通过环境变量或参数覆盖
+  // 官方 Anthropic: ANTHROPIC_DEFAULT_SONNET_MODEL
+  // 智谱AI: ANTHROPIC_DEFAULT_SONNET_MODEL
+  model: process.env.ANTHROPIC_DEFAULT_SONNET_MODEL || process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514',
   max_tokens: 8192,
   temperature: 0.3,
-  timeout: 300000,    // 5 分钟
+  timeout: parseInt(process.env.API_TIMEOUT_MS || '300000', 10),
   system: null,
   tools: [],
 };
 
-const API_BASE = 'https://api.anthropic.com/v1/messages';
+// API 端点配置（优先环境变量）
+const API_BASE = process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com/v1/messages';
 
 /**
  * 主调用函数
@@ -75,7 +80,7 @@ export async function llmcall(prompt, params = {}, config = {}) {
 }
 
 /**
- * 调用 Anthropic Messages API
+ * 调用 Anthropic-compatible API
  */
 async function callAnthropicAPI(body, timeoutMs) {
   const apiKey = getApiKey();
@@ -84,14 +89,24 @@ async function callAnthropicAPI(body, timeoutMs) {
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
+    // 构建请求头（支持多种 Provider 格式）
+    const headers = {
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    };
+
+    // Authorization: Bearer 格式（如智谱AI）
+    if (process.env.ANTHROPIC_AUTH_HEADER === 'Authorization') {
+      headers['Authorization'] = `Bearer ${apiKey}`;
+    } else {
+      // x-api-key 格式（官方 Anthropic）
+      headers['x-api-key'] = apiKey;
+    }
+
     const res = await fetch(API_BASE, {
       method: 'POST',
       signal: controller.signal,
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-      },
+      headers,
       body: JSON.stringify(body),
     });
 
@@ -101,7 +116,7 @@ async function callAnthropicAPI(body, timeoutMs) {
       let errBody = '';
       try { errBody = await res.text(); } catch (_) {}
       throw new LLMCallError(
-        `Anthropic API 错误 ${res.status}: ${errBody || res.statusText}`,
+        `API 错误 ${res.status}: ${errBody || res.statusText}`,
         { status: res.status, body: errBody }
       );
     }
@@ -151,15 +166,20 @@ function renderTemplate(template, params) {
 }
 
 /**
- * 获取 API Key
- * 优先级: process.env.ANTHROPIC_API_KEY
+ * 获取 API 认证信息
+ * 优先级: ANTHROPIC_AUTH_TOKEN > ANTHROPIC_API_KEY
  */
 function getApiKey() {
+  // 智谱AI / 兼容 Provider 格式
+  const authToken = process.env.ANTHROPIC_AUTH_TOKEN;
+  if (authToken) return authToken;
+
+  // 官方 Anthropic 格式
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (apiKey) return apiKey;
 
   throw new LLMCallError(
-    '未找到 ANTHROPIC_API_KEY。请设置环境变量 process.env.ANTHROPIC_API_KEY',
+    '未找到认证信息。请设置 ANTHROPIC_AUTH_TOKEN（智谱AI）或 ANTHROPIC_API_KEY（Anthropic）',
     {}
   );
 }
