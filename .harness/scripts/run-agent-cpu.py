@@ -122,6 +122,12 @@ def get_agent_cpu_path():
     return agent_cpu_dir
 
 
+def get_project_root():
+    """获取项目根目录"""
+    script_dir = Path(__file__).parent
+    return script_dir.parent.parent
+
+
 def run_node_command(command, timeout=300, env=None):
     """
     运行 Node.js 命令
@@ -146,7 +152,7 @@ def run_node_command(command, timeout=300, env=None):
             encoding='utf-8',
             errors='replace',
             timeout=timeout,
-            cwd=get_agent_cpu_path(),
+            cwd=get_project_root(),
             env=run_env
         )
         return (result.returncode, result.stdout, result.stderr)
@@ -235,17 +241,32 @@ def execute_flow(task_id, flow_type='dev', category='general', task_data=None):
         'TASK_DATA': json.dumps(task_data, ensure_ascii=False)
     }
 
-    returncode, stdout, stderr = run_node_command([
-        'node',
-        'cli.js',
-        'run',
-        '--code',
-        get_flow_code(flow_type),
-        '--task-id',
-        task_id,
-        '--category',
-        category
-    ], timeout=600, env=run_env)
+    # 将脚本写入临时文件以避免 shell 转义问题
+    import tempfile
+    import os as _os
+    flow_code = get_flow_code(flow_type)
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.js', delete=False, encoding='utf-8') as f:
+        f.write(flow_code)
+        script_path = f.name
+
+    try:
+        returncode, stdout, stderr = run_node_command([
+            'node',
+            str(get_agent_cpu_path() / 'cli.js'),
+            'run',
+            '--script',
+            script_path,
+            '--task-id',
+            task_id,
+            '--category',
+            category
+        ], timeout=600, env=run_env)
+    finally:
+        # 清理临时文件
+        try:
+            _os.unlink(script_path)
+        except Exception:
+            pass
 
     if returncode != 0:
         error(f'Agent CPU 执行失败: {stderr}', file=sys.stderr)
@@ -261,14 +282,6 @@ def execute_flow(task_id, flow_type='dev', category='general', task_data=None):
         # 打印 Node.js 的所有输出（包含 TestFlow 的详细日志）
         if stdout:
             print(stdout)
-
-        # 提取 JSON 结果（最后一行）
-        lines = stdout.strip().split('\n')
-        json_line = None
-        for line in reversed(lines):
-            if line.strip().startswith('{'):
-                json_line = line.strip()
-                break
 
         return {
             'success': True,
@@ -288,114 +301,145 @@ def get_flow_code(flow_type):
     """获取流程代码"""
     if flow_type == 'dev':
         return r'''
-const { createAgentCPU } = await import('./runtime.js');
-const cpu = createAgentCPU({
-  enableSelfHealing: true,
-  enableHumanReview: false,
-  enableKnowledgeBase: true
-});
-const taskData = JSON.parse(process.env.TASK_DATA || '{}');
-
 const devFlow = async (builtins, scope, context) => {
   console.log("[DevFlow] 开始开发流程...");
-  console.log("任务描述: " + (context.task?.description || '未提供'));
-  const taskDesc = context.task?.description || '';
-  const analysis = await builtins.llmcall("你是 Dev Agent，分析以下任务并输出实现计划：\n" + taskDesc);
-  scope.set('analysis', analysis);
-  console.log("分析结果: " + analysis);
-  return { success: true, artifacts: scope.artifacts || [] };
+  const taskId = context.taskId || 'unknown';
+  const taskDesc = context.task?.description || '未提供';
+
+  // 构建 Prompt
+  const prompt = `你是 Dev Agent，按照任务描述编写代码。
+
+任务描述:
+${taskDesc}
+
+请直接输出代码，不要多余解释。`;
+
+  console.log("[DevFlow] 调用 LLM...");
+
+  try {
+    // llmcall 直接返回 content 字符串
+    const llmOutput = await builtins.llmcall(prompt, { model: 'sonnet' }) || '';
+    console.log("[DevFlow] LLM 返回长度:", llmOutput.length);
+
+    // 提取代码
+    let code = llmOutput;
+    const match = llmOutput.match(/```php\n?([\s\S]*?)```/i);
+    if (match) {
+      code = match[1].trim();
+    }
+
+    console.log("[DevFlow] 提取到代码，长度: " + code.length);
+
+    // 保存到工作区
+    const workspaceDir = '/tmp/agent-cpu-workspace/' + taskId;
+    await builtins.mkdir(workspaceDir, { recursive: true });
+    const safeId = taskId.replace(/[^a-zA-Z0-9_]/g, '_');
+    const outputFile = workspaceDir + '/' + safeId + '.php';
+    await builtins.writeFile(outputFile, code, 'utf-8');
+    console.log("[DevFlow] 代码已写入:", outputFile);
+
+    // 注册 artifact 到 scope
+    scope.set('artifacts', [{ path: outputFile, type: 'service' }]);
+
+    return { success: true, code, artifacts: [{ path: outputFile, type: 'service' }] };
+  } catch (e) {
+    console.error("[DevFlow] LLM 调用失败:", e.message);
+    return { success: false, error: e.message };
+  }
 };
 
-const result = await cpu.execute(devFlow, {
-  taskId: context.taskId,
-  category: context.category,
-  task: taskData
+// 执行 DevFlow
+devFlow(builtins, scope, context).then(r => {
+  console.log("\n=== 执行结果 ===");
+  console.log("状态: " + (r?.success !== false ? "成功" : "失败"));
+  if (r?.code) {
+    console.log("生成的代码长度: " + r.code.length);
+  }
+  process.exit(r?.success !== false ? 0 : 1);
+}).catch(e => {
+  console.error("执行失败:", e.message);
+  process.exit(1);
 });
-console.log("\n=== 执行结果 ===");
-console.log("状态: " + (result.success ? "成功" : "失败"));
-console.log("耗时: " + result.duration + "ms");
-console.log("产出文件: " + (result.artifacts?.length || 0) + " 个");
 '''
     elif flow_type == 'test':
         return r'''
-const fs = await import("fs");
+const testFlow = async (builtins, scope, context) => {
+  const artifacts = context.task?.artifacts || [];
 
-// 读取任务数据
-const taskData = JSON.parse(process.env.TASK_DATA || '{}');
-const artifacts = taskData?.artifacts || [];
+  console.log("[TestFlow] 开始测试流程...");
+  console.log("[TestFlow] 找到 " + artifacts.length + " 个文件");
 
-console.log("[TestFlow] 开始测试流程...");
-console.log("[TestFlow] 找到 " + artifacts.length + " 个文件");
+  let issueCount = 0;
 
-let issueCount = 0;
+  // 检查每个文件
+  for (const artifact of artifacts) {
+    if (artifact.path && artifact.path.endsWith(".php")) {
+      console.log("[TestFlow] 检查文件: " + artifact.path);
+      try {
+        const content = await builtins.readFile(artifact.path, "utf-8");
+        console.log("[TestFlow] 文件内容长度: " + content.length);
 
-// 检查每个文件
-for (const artifact of artifacts) {
-  if (artifact.path && artifact.path.endsWith(".php")) {
-    console.log("[TestFlow] 检查文件: " + artifact.path);
-    try {
-      const content = await fs.promises.readFile(artifact.path, "utf-8");
-      console.log("[TestFlow] 文件内容长度: " + content.length);
+        // 检查硬编码密钥/Token (Hard Rule)
+        if (content.match(/sk_[a-z]+_[a-z0-9]+/i) ||
+            content.match(/TOKEN\s*=\s*['"][^'"]+['"]/i) ||
+            content.match(/SECRET\s*=\s*['"][^'"]+['"]/i) ||
+            content.match(/KEY\s*=\s*['"][^'"]+['"]/i)) {
+          console.log("发现硬编码密钥/Token!");
+          issueCount++;
+        }
 
-      // 检查硬编码密钥/Token (Hard Rule)
-      if (content.match(/sk_[a-z]+_[a-z0-9]+/i) || // sk_test_xxx, sk_live_xxx
-          content.match(/TOKEN\s*=\s*['"][^'"]+['"]/i) ||
-          content.match(/SECRET\s*=\s*['"][^'"]+['"]/i) ||
-          content.match(/KEY\s*=\s*['"][^'"]+['"]/i)) {
-        console.log("发现硬编码密钥/Token!");
-        issueCount++;
+        // 检查 SQL 拼接 (Hard Rule)
+        if (content.includes("DB::raw(") ||
+            content.includes("DB::statement(") && content.match(/['\"].*WHERE.*['\"]\s*\./) ||
+            content.match(/UPDATE\s+\w+\s+SET.*['\"]\s*\./i) ||
+            content.match(/SELECT\s+.*FROM.*['\"]\s*\./i)) {
+          console.log("发现 SQL 拼接!");
+          issueCount++;
+        }
+
+        // 检查 eval() 使用 (Hard Rule)
+        if (content.includes("eval(")) {
+          console.log("发现 eval() 使用!");
+          issueCount++;
+        }
+      } catch (e) {
+        console.log("[TestFlow] 读取文件失败: " + e.message);
       }
-
-      // 检查 SQL 拼接 (Hard Rule)
-      if (content.includes("DB::raw(") ||
-          content.includes("DB::statement(") && content.match(/['\"].*WHERE.*['\"]\s*\./) ||
-          content.match(/UPDATE\s+\w+\s+SET.*['\"]\s*\./i) ||
-          content.match(/SELECT\s+.*FROM.*['\"]\s*\./i)) {
-        console.log("发现 SQL 拼接!");
-        issueCount++;
-      }
-
-      // 检查 eval() 使用 (Hard Rule)
-      if (content.includes("eval(")) {
-        console.log("发现 eval() 使用!");
-        issueCount++;
-      }
-    } catch (e) {
-      console.log("[TestFlow] 读取文件失败: " + e.message);
     }
   }
-}
 
-console.log("[TestFlow] 检查完成，发现 " + issueCount + " 个问题");
+  console.log("[TestFlow] 检查完成，发现 " + issueCount + " 个问题");
 
-console.log("\n=== 执行结果 ===");
-console.log("状态: 成功");
-console.log("发现的问题: " + issueCount + " 个");
+  return { success: true, issueCount };
+};
+
+// 执行 TestFlow
+testFlow(builtins, scope, context).then(r => {
+  console.log("\n=== 执行结果 ===");
+  console.log("状态: " + (r?.success !== false ? "成功" : "失败"));
+  console.log("发现问题数: " + (r?.issueCount || 0));
+  process.exit(r?.success !== false ? 0 : 1);
+}).catch(e => {
+  console.error("执行失败:", e.message);
+  process.exit(1);
+});
 '''
     elif flow_type == 'review':
         return r'''
-const { createAgentCPU } = await import('./runtime.js');
-const cpu = createAgentCPU({
-  enableSelfHealing: false,
-  enableHumanReview: false,
-  enableKnowledgeBase: false
-});
-const taskData = JSON.parse(process.env.TASK_DATA || '{}');
-
 const reviewFlow = async (builtins, scope, context) => {
   console.log("[ReviewFlow] 开始审查流程...");
   const artifacts = context.task?.artifacts || [];
-  scope.set("qualityScore", 10);
-  return { success: true, qualityScore: scope.qualityScore || 10 };
-};
 
-const result = await cpu.execute(reviewFlow, {
-  taskId: context.taskId,
-  task: taskData
-});
-console.log("\n=== 执行结果 ===");
-console.log("状态: " + (result.success ? "成功" : "失败"));
-console.log("质量评分: " + (result.qualityScore || 10) + "/10");
+  // 简单的质量评分
+  let score = 10;
+  if (artifacts.length === 0) {
+    score = 5;
+  }
+
+  console.log("[ReviewFlow] 审查完成，质量评分: " + score + "/10");
+
+  return { success: true, qualityScore: score };
+};
 '''
     else:
         return "console.log('Flow type not implemented: " + flow_type + "');"

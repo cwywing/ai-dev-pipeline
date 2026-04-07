@@ -66,32 +66,54 @@ async function runCommand() {
   // 读取任务数据
   const taskData = JSON.parse(process.env.TASK_DATA || '{}');
 
-  const cpu = createAgentCPU({
-    enableSelfHealing: true,
-    enableHumanReview: false,  // CLI 模式默认关闭人工审查
-    enableKnowledgeBase: true,
-    sandbox: false  // CLI 模式禁用沙箱以支持动态 import
-  });
-
-  try {
-    const result = await cpu.execute(script, {
-      taskId,
-      category,
-      task: taskData
-    });
-
-    console.log('\n=== 执行结果 ===');
-    console.log(`状态: ${result.success ? '成功' : '失败'}`);
-    console.log(`耗时: ${result.duration}ms`);
-    console.log(`产出文件: ${result.artifacts.length} 个`);
-    console.log(`设计决策: ${result.decisions.length} 个`);
-
-    if (result.artifacts.length > 0) {
-      console.log('\n产出文件列表:');
-      result.artifacts.forEach(a => console.log(`  - ${a.path}`));
+  // 创建内置函数对象
+  const builtins = {
+    // llmcall - LLM 调用
+    llmcall: async (prompt, config = {}) => {
+      const { llmcall: llmFn } = await import('./builtins/llmcall.js');
+      return llmFn(prompt, {}, config);
+    },
+    // readFile - 读取文件
+    readFile: async (filePath, encoding = 'utf-8') => {
+      const { readFile } = await import('fs/promises');
+      return readFile(filePath, encoding);
+    },
+    // writeFile - 写入文件
+    writeFile: async (filePath, content, encoding = 'utf-8') => {
+      const { writeFile } = await import('fs/promises');
+      return writeFile(filePath, content, encoding);
+    },
+    // mkdir - 创建目录
+    mkdir: async (dirPath, options = { recursive: true }) => {
+      const { mkdir } = await import('fs/promises');
+      return mkdir(dirPath, options);
     }
+  };
 
-    process.exit(result.success ? 0 : 1);
+  // 创建 scope 对象
+  const scope = {
+    _data: {},
+    get(key) { return this._data[key]; },
+    set(key, value) { this._data[key] = value; },
+    getAllVariables() { return { ...this._data }; }
+  };
+
+  // 创建 context 对象
+  const context = {
+    taskId,
+    category,
+    task: taskData,
+    constraints: {}
+  };
+
+  // 直接执行脚本，不使用 AgentCPU 的自愈机制
+  try {
+    // 使用 AsyncFunction 构造函数以支持顶层 await
+    // 必须显式声明参数名，这样调用时才能传递进去
+    const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+    const scriptFn = new AsyncFunction('builtins', 'scope', 'context', script);
+    await scriptFn(builtins, scope, context);
+    // 脚本内部会自己处理 process.exit
   } catch (error) {
     console.error('\n执行失败:', error.message);
     process.exit(1);
