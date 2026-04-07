@@ -313,6 +313,16 @@ export class AgentCPU {
         const shell = isWindows ? 'cmd.exe' : '/bin/bash';
         const shellArgs = isWindows ? ['/c', command] : ['-c', command];
 
+        const compactLog = (log, maxLines = 100) => {
+          if (!log) return '';
+          const lines = log.split('\n');
+          if (lines.length <= maxLines) return log;
+          const head = lines.slice(0, 30).join('\n');
+          const tail = lines.slice(-70).join('\n');
+          const truncated = lines.length - 100;
+          return `${head}\n\n... [System: 已截断 ${truncated} 行无用日志以保护 LLM 上下文] ...\n\n${tail}`;
+        };
+
         return new Promise((resolve) => {
           const proc = spawn(shell, shellArgs, {
             timeout: 30000,
@@ -327,7 +337,7 @@ export class AgentCPU {
           proc.stderr.on('data', (data) => { stderr += data.toString(); });
 
           proc.on('close', (code) => {
-            resolve({ exitCode: code, stdout, stderr });
+            resolve({ exitCode: code, stdout: compactLog(stdout), stderr: compactLog(stderr) });
           });
 
           proc.on('error', (err) => {
@@ -336,7 +346,7 @@ export class AgentCPU {
 
           setTimeout(() => {
             proc.kill();
-            resolve({ exitCode: -1, stdout, stderr: 'Command timeout' });
+            resolve({ exitCode: -1, stdout: compactLog(stdout), stderr: compactLog(stderr) || 'Command timeout' });
           }, 30000);
         });
       },

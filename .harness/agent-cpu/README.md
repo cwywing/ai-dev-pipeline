@@ -77,6 +77,20 @@ cd .harness/agent-cpu
 npm install
 ```
 
+### 配置 API Key
+
+Agent CPU 直接调用 Anthropic Messages API，需要设置密钥：
+
+```bash
+# 方式一：环境变量（推荐）
+export ANTHROPIC_API_KEY=sk-ant-api03-...
+
+# 方式二：在 .env 文件中（项目根目录或 .harness 目录）
+# ANTHROPIC_API_KEY=sk-ant-api03-...
+```
+
+> API Key 可从 [Anthropic Console](https://console.anthropic.com/) 获取。
+
 ### CLI 使用
 
 ```bash

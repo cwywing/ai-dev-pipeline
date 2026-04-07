@@ -1,210 +1,167 @@
 /**
  * llmcall - 确定性任务调用
  *
- * 负责处理确定性的、细粒度的文本生成或数据提取任务。
+ * 直接请求 Anthropic Messages API，支持 tool_use、messages 历史和 system prompt。
  */
 
 import { LLMCallError } from '../errors.js';
 
 export const DEFAULT_LLM_CONFIG = {
-  model: 'sonnet',
+  model: 'claude-sonnet-4-20250514',
+  max_tokens: 8192,
   temperature: 0.3,
-  timeout: 300000,
-  retries: 2,
-  onTokenUsage: null,
+  timeout: 300000,    // 5 分钟
+  system: null,
+  tools: [],
 };
 
+const API_BASE = 'https://api.anthropic.com/v1/messages';
+
+/**
+ * 主调用函数
+ *
+ * @param {string} prompt - 用户消息
+ * @param {object} params - 模板参数（用于 {key} 占位替换）
+ * @param {object} config - 配置
+ * @param {string} [config.system] - 系统提示词
+ * @param {array}  [config.messages] - 对话历史 [{role, content}]
+ * @param {array}  [config.tools] - 工具定义 [{name, description, input_schema}]
+ * @param {string} [config.model] - 模型名称
+ * @param {number} [config.temperature]
+ * @param {number} [config.max_tokens]
+ * @param {number} [config.timeout]
+ * @returns {Promise<object>} 完整 API 响应 { content, usage, stop_reason, ... }
+ */
 export async function llmcall(prompt, params = {}, config = {}) {
   const llmConfig = { ...DEFAULT_LLM_CONFIG, ...config };
   const renderedPrompt = renderTemplate(prompt, params);
-  const response = await callLLM(renderedPrompt, llmConfig);
 
-  if (!response || !response.content) {
-    throw new LLMCallError('LLM 返回为空', response);
+  // 构建 messages 数组
+  const messages = [...(llmConfig.messages || [])];
+  messages.push({ role: 'user', content: renderedPrompt });
+
+  const body = {
+    model: llmConfig.model,
+    max_tokens: llmConfig.max_tokens,
+    temperature: llmConfig.temperature,
+    system: llmConfig.system || undefined,
+    messages,
+  };
+
+  // 有 tools 才加入，避免 API 报错
+  if (llmConfig.tools && llmConfig.tools.length > 0) {
+    body.tools = llmConfig.tools;
   }
 
-  return response.content;
+  const response = await callAnthropicAPI(body, llmConfig.timeout);
+
+  // 提取文本内容（向后兼容）
+  const content = extractTextContent(response);
+
+  if (content === null || content === undefined) {
+    throw new LLMCallError('LLM 返回内容为空', response);
+  }
+
+  return content;
 }
 
+/**
+ * 调用 Anthropic Messages API
+ */
+async function callAnthropicAPI(body, timeoutMs) {
+  const apiKey = getApiKey();
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(API_BASE, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+
+    clearTimeout(timer);
+
+    if (!res.ok) {
+      let errBody = '';
+      try { errBody = await res.text(); } catch (_) {}
+      throw new LLMCallError(
+        `Anthropic API 错误 ${res.status}: ${errBody || res.statusText}`,
+        { status: res.status, body: errBody }
+      );
+    }
+
+    const data = await res.json();
+    return data;
+
+  } catch (err) {
+    clearTimeout(timer);
+    if (err.name === 'AbortError') {
+      throw new LLMCallError(`LLM 调用超时（${timeoutMs}ms）`, {});
+    }
+    throw new LLMCallError(`LLM 调用失败: ${err.message}`, { cause: err });
+  }
+}
+
+/**
+ * 从 API 响应中提取文本内容
+ * 支持多 block 响应（text / tool_use 混合）
+ */
+function extractTextContent(response) {
+  if (!response || !response.content) return null;
+
+  // 纯文本 block，直接返回
+  const textBlocks = response.content.filter(b => b.type === 'text');
+  if (textBlocks.length > 0) {
+    return textBlocks.map(b => b.text).join('\n');
+  }
+
+  // 如果只有 tool_use block，返回空（caller 应检查 tool_use）
+  const toolBlocks = response.content.filter(b => b.type === 'tool_use');
+  if (toolBlocks.length > 0) {
+    return null; // caller 通过 response.content 自己处理 tool_use
+  }
+
+  return null;
+}
+
+/**
+ * 模板渲染：替换 {key} 占位符
+ */
 function renderTemplate(template, params) {
   return template.replace(/\{(\w+)\}/g, (match, key) => {
-    if (key in params) {
-      return String(params[key]);
-    }
+    if (key in params) return String(params[key]);
     return match;
   });
 }
 
-async function callLLM(prompt, config) {
-  const startTime = Date.now();
+/**
+ * 获取 API Key
+ * 优先级: process.env.ANTHROPIC_API_KEY
+ */
+function getApiKey() {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (apiKey) return apiKey;
 
-  try {
-    const result = await callClaudeCLI(prompt, config);
-    const duration = Date.now() - startTime;
-
-    if (config.onTokenUsage && result.usage) {
-      config.onTokenUsage({
-        inputTokens: result.usage.input_tokens,
-        outputTokens: result.usage.output_tokens,
-        duration
-      });
-    }
-
-    return {
-      content: result.content,
-      usage: result.usage,
-      duration,
-      model: config.model
-    };
-  } catch (error) {
-    throw new LLMCallError(`LLM 调用失败: ${error.message}`, { prompt, config });
-  }
+  throw new LLMCallError(
+    '未找到 ANTHROPIC_API_KEY。请设置环境变量 process.env.ANTHROPIC_API_KEY',
+    {}
+  );
 }
 
-async function callClaudeCLI(prompt, config) {
-  const { spawn } = await import('child_process');
-  const { writeFile, unlink } = await import('fs/promises');
-  const os = await import('os');
-  const path = await import('path');
+// ============================================================
+// 批量与并行
+// ============================================================
 
-  const isWindows = os.platform() === 'win32';
-
-  return new Promise(async (resolve, reject) => {
-    if (isWindows) {
-      // Windows: 使用 Python subprocess + base64 编码
-      const tempDir = os.tmpdir();
-      const scriptPath = path.join(tempDir, `claude_llm_${Date.now()}.py`);
-      const claudePath = process.env.APPDATA + '/npm/claude.cmd';
-
-      // 使用 base64 编码避免转义问题
-      const promptBase64 = Buffer.from(prompt, 'utf-8').toString('base64');
-      const modelArg = config.model ? `, "--model", "${config.model}"` : '';
-
-      const pythonScript = `# -*- coding: utf-8 -*-
-import subprocess
-import sys
-import base64
-import os
-os.environ['PYTHONIOENCODING'] = 'utf-8'
-sys.stdout.reconfigure(encoding='utf-8')
-sys.stderr.reconfigure(encoding='utf-8')
-prompt = base64.b64decode("${promptBase64}").decode('utf-8')
-claude = r"${claudePath}"
-result = subprocess.run(
-    [claude, "--print", "--output-format", "json"${modelArg}],
-    input=prompt,
-    capture_output=True,
-    text=True,
-    encoding='utf-8',
-    timeout=300
-)
-sys.stdout.write(result.stdout)
-if result.stderr:
-    sys.stderr.write(result.stderr)
-sys.exit(result.returncode)
-`;
-
-      await writeFile(scriptPath, pythonScript, 'utf8');
-
-      const proc = spawn('python', [scriptPath], {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        shell: false,
-        windowsHide: true
-      });
-
-      let stdout = '';
-      let stderr = '';
-
-      proc.stdout.on('data', (data) => {
-        stdout += data.toString();
-      });
-
-      proc.stderr.on('data', (data) => {
-        stderr += data.toString();
-      });
-
-      proc.on('close', async (code) => {
-        await unlink(scriptPath).catch(() => {});
-
-        if (stdout.trim()) {
-          try {
-            const response = JSON.parse(stdout);
-            resolve({
-              content: response.result || stdout.trim(),
-              usage: response.usage || {}
-            });
-          } catch (e) {
-            resolve({ content: stdout.trim(), usage: {} });
-          }
-        } else {
-          reject(new Error(`Claude CLI failed: ${stderr || 'unknown error'}`));
-        }
-      });
-
-      proc.on('error', async (err) => {
-        await unlink(scriptPath).catch(() => {});
-        reject(new Error(`Spawn error: ${err.message}`));
-      });
-
-      setTimeout(() => {
-        proc.kill();
-        reject(new Error('LLM 调用超时'));
-      }, config.timeout || 300000);
-
-    } else {
-      // Unix: 使用 stdin 传递 prompt
-      const args = ['--print', '--output-format', 'json'];
-      if (config.model) {
-        args.push('--model', config.model);
-      }
-
-      const proc = spawn('claude', args, {
-        shell: false,
-        stdio: ['pipe', 'pipe', 'pipe']
-      });
-
-      let stdout = '';
-      let stderr = '';
-
-      proc.stdout.on('data', (data) => {
-        stdout += data.toString();
-      });
-
-      proc.stderr.on('data', (data) => {
-        stderr += data.toString();
-      });
-
-      proc.stdin.write(prompt);
-      proc.stdin.end();
-
-      proc.on('close', (code) => {
-        if (code === 0 || stdout.trim()) {
-          try {
-            const response = JSON.parse(stdout);
-            resolve({
-              content: response.result || stdout.trim(),
-              usage: response.usage || {}
-            });
-          } catch (e) {
-            resolve({ content: stdout.trim(), usage: {} });
-          }
-        } else {
-          reject(new Error(`Claude CLI exited with code ${code}: ${stderr}`));
-        }
-      });
-
-      proc.on('error', (err) => {
-        reject(new Error(`Spawn error: ${err.message}`));
-      });
-
-      setTimeout(() => {
-        proc.kill();
-        reject(new Error('LLM 调用超时'));
-      }, config.timeout || 300000);
-    }
-  });
-}
-
+/**
+ * 批量串行调用
+ */
 export async function llmcallBatch(tasks, config = {}) {
   const results = [];
   for (const task of tasks) {
@@ -214,6 +171,9 @@ export async function llmcallBatch(tasks, config = {}) {
   return results;
 }
 
+/**
+ * 并发调用（分批）
+ */
 export async function llmcallParallel(tasks, concurrency = 3, config = {}) {
   const results = new Array(tasks.length);
   for (let i = 0; i < tasks.length; i += concurrency) {
@@ -230,16 +190,12 @@ export async function llmcallParallel(tasks, concurrency = 3, config = {}) {
   return results;
 }
 
-export function createLLMCall(scope, defaultConfig = {}) {
+/**
+ * 创建带约束注入的 llmcall 工厂函数
+ */
+export function createLLMCall(defaultConfig = {}) {
   return async function(prompt, params = {}, config = {}) {
-    const mergedParams = {
-      ...scope.getAllVariables(),
-      ...params
-    };
-    const constraints = scope.constraints.length > 0
-      ? `\n\n约束条件:\n${scope.constraints.map(c => `- ${c}`).join('\n')}`
-      : '';
-    const finalPrompt = prompt + constraints;
-    return llmcall(finalPrompt, mergedParams, { ...defaultConfig, ...config });
+    const mergedConfig = { ...defaultConfig, ...config };
+    return llmcall(prompt, params, mergedConfig);
   };
 }
