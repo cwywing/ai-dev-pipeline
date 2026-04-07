@@ -236,10 +236,21 @@ def execute_flow(task_id, flow_type='dev', category='general', task_data=None):
     # 尝试加载模板并注入约束
     template_content = load_template_for_flow(flow_type)
 
-    # 设置环境变量
-    run_env = {
-        'TASK_DATA': json.dumps(task_data, ensure_ascii=False)
-    }
+    # 加载 .env 文件并设置环境变量
+    run_env = {}
+    env_file = get_agent_cpu_path() / '.env'
+    if env_file.exists():
+        try:
+            with open(env_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#') and '=' in line:
+                        key, value = line.split('=', 1)
+                        run_env[key.strip()] = value.strip()
+        except Exception:
+            pass
+
+    run_env['TASK_DATA'] = json.dumps(task_data, ensure_ascii=False)
 
     # 将脚本写入临时文件以避免 shell 转义问题
     import tempfile

@@ -9,6 +9,7 @@
  *   node cli.js review --request review_id --approve
  */
 
+import 'dotenv/config';
 import { AgentCPU, createAgentCPU } from './runtime.js';
 import { humanReviewManager, ReviewResult } from './human-review.js';
 import { knowledgeBase } from './knowledge-base.js';
