@@ -11,9 +11,8 @@ import { LLMCallError } from '../errors.js';
  * LLM 调用配置
  */
 export const DEFAULT_LLM_CONFIG = {
-  model: 'claude-3-5-sonnet-20241022',
+  model: 'sonnet',            // 使用 Claude Code 的模型别名
   temperature: 0.3,          // 低温度确保确定性
-  maxTokens: 4096,
   timeout: 60000,            // 60秒超时
   retries: 2,               // LLM 调用重试次数
   onTokenUsage: null,       // Token 使用回调
@@ -100,6 +99,7 @@ async function callLLM(prompt, config) {
 
 /**
  * 调用 Claude CLI
+ * Windows 兼容版本：使用 Python subprocess 桥接
  *
  * @param {string} prompt - 提示词
  * @param {object} config - 配置
@@ -107,61 +107,135 @@ async function callLLM(prompt, config) {
  */
 async function callClaudeCLI(prompt, config) {
   const { spawn } = await import('child_process');
+  const { writeFile, unlink } = await import('fs/promises');
+  const os = await import('os');
+  const path = await import('path');
 
-  return new Promise((resolve, reject) => {
-    const args = [
-      'claude',
-      '-p',
-      prompt,
-      '--output-format',
-      'json',
-      '--max-tokens',
-      String(config.maxTokens)
-    ];
+  const isWindows = os.platform() === 'win32';
 
-    if (config.model) {
-      args.push('--model', config.model);
-    }
+  return new Promise(async (resolve, reject) => {
+    const startTime = Date.now();
 
-    const proc = spawn(args[0], args.slice(1), {
-      timeout: config.timeout,
-      shell: true
-    });
+    if (isWindows) {
+      // Windows: 使用 Python subprocess 执行，先写脚本文件
+      const tempDir = os.tmpdir();
+      const scriptPath = path.join(tempDir, `claude_llm_${Date.now()}.py`);
+      const claudePath = process.env.APPDATA + '/npm/claude.cmd';
 
-    let stdout = '';
-    let stderr = '';
+      // 构建 Python 脚本
+      const escapedPrompt = prompt
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\'")
+        .replace(/\n/g, '\\n');
 
-    proc.stdout.on('data', (data) => {
-      stdout += data.toString();
-    });
+      const modelArg = config.model ? `, "--model", "${config.model}"` : '';
 
-    proc.stderr.on('data', (data) => {
-      stderr += data.toString();
-    });
+      const lines = [
+        'import subprocess',
+        'import sys',
+        `claude = r"${claudePath}"`,
+        `result = subprocess.run([claude, "-p", '${escapedPrompt}', "--output-format", "json"${modelArg}], capture_output=True, text=True, timeout=120)`,
+        'sys.stdout.write(result.stdout)',
+        'if result.stderr: sys.stderr.write(result.stderr)',
+        'sys.exit(result.returncode)'
+      ];
+      const pythonScript = lines.join('\n');
 
-    proc.on('close', (code) => {
-      if (code === 0) {
-        try {
-          const response = JSON.parse(stdout);
-          resolve(response);
-        } catch (e) {
-          // 如果不是 JSON，返回原始内容
-          resolve({ content: stdout.trim() });
+      await writeFile(scriptPath, pythonScript, 'utf8');
+
+      const proc = spawn('python', [scriptPath], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        shell: false,
+        windowsHide: true
+      });
+
+      let stdout = '';
+      let stderr = '';
+
+      proc.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
+
+      proc.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+
+      proc.on('close', async (code) => {
+        // 清理脚本文件
+        await unlink(scriptPath).catch(() => {});
+
+        if (stdout.trim()) {
+          try {
+            const response = JSON.parse(stdout);
+            resolve({
+              content: response.result || stdout.trim(),
+              usage: response.usage || {}
+            });
+          } catch (e) {
+            resolve({ content: stdout.trim(), usage: {} });
+          }
+        } else {
+          reject(new Error(`Claude CLI failed: ${stderr || 'unknown error'}`));
         }
-      } else {
-        reject(new Error(`Claude CLI exited with code ${code}: ${stderr}`));
+      });
+
+      proc.on('error', async (err) => {
+        await unlink(scriptPath).catch(() => {});
+        reject(new Error(`Spawn error: ${err.message}`));
+      });
+
+      setTimeout(() => {
+        proc.kill();
+        reject(new Error('LLM 调用超时'));
+      }, config.timeout || 120000);
+
+    } else {
+      // Unix: 直接执行
+      const args = ['-p', prompt, '--output-format', 'json'];
+      if (config.model) {
+        args.push('--model', config.model);
       }
-    });
 
-    proc.on('error', (err) => {
-      reject(err);
-    });
+      const proc = spawn('claude', args, {
+        shell: false
+      });
 
-    // 超时处理
-    setTimeout(() => {
-      proc.kill();
-      reject(new Error('LLM 调用超时'));
-    }, config.timeout);
+      let stdout = '';
+      let stderr = '';
+
+      proc.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
+
+      proc.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+
+      proc.on('close', (code) => {
+        if (code === 0 || stdout.trim()) {
+          try {
+            const response = JSON.parse(stdout);
+            resolve({
+              content: response.result || stdout.trim(),
+              usage: response.usage || {}
+            });
+          } catch (e) {
+            resolve({ content: stdout.trim(), usage: {} });
+          }
+        } else {
+          reject(new Error(`Claude CLI exited with code ${code}: ${stderr}`));
+        }
+      });
+
+      proc.on('error', (err) => {
+        reject(new Error(`Spawn error: ${err.message}`));
+      });
+
+      setTimeout(() => {
+        proc.kill();
+        reject(new Error('LLM 调用超时'));
+      }, config.timeout || 120000);
+    }
   });
 }
 

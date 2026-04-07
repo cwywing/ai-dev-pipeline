@@ -198,6 +198,98 @@ def get_flow_code(flow_type):
   }
 })();
         '''
+    elif flow_type == 'test':
+        return '''
+(async () => {
+  const { createAgentCPU } = await import('./runtime.js');
+
+  const cpu = createAgentCPU({
+    enableSelfHealing: true,
+    enableHumanReview: false,
+    enableKnowledgeBase: true,
+    onLog: (entry) => {
+      const prefix = { info: '[INFO]', warn: '[WARN]', error: '[ERROR]', success: '[OK]' }[entry.level] || '[LOG]';
+      console.log(prefix + ' ' + entry.message);
+    }
+  });
+
+  const taskData = JSON.parse(process.env.TASK_DATA || '{}');
+
+  const result = await cpu.execute(` + '`' + """
+    // Test Flow 示例
+    console.log("[TestFlow] 开始测试流程...");
+
+    const devArtifacts = context.task?.artifacts || [];
+    scope.set('files', devArtifacts);
+    scope.set('issues', []);
+
+    // 语法检查
+    for (const artifact of devArtifacts) {
+      if (artifact.path.endsWith('.php')) {
+        const result = await runCommand(`php8 -l ` + artifact.path);
+        metacall(result.exitCode === 0, "语法错误: " + artifact.path);
+      }
+    }
+
+    // 返回结果
+    { success: true, issues: scope.issues };
+  """ + '`' + `, {
+    taskId: context.taskId,
+    category: context.category,
+    task: taskData
+  });
+
+  console.log("\\n=== 执行结果 ===");
+  console.log("状态: " + (result.success ? "成功" : "失败"));
+  console.log("发现的问题: " + result.issues.length + " 个");
+})();
+        '''
+    elif flow_type == 'review':
+        return '''
+(async () => {
+  const { createAgentCPU } = await import('./runtime.js');
+
+  const cpu = createAgentCPU({
+    enableSelfHealing: true,
+    enableHumanReview: false,
+    enableKnowledgeBase: true,
+    onLog: (entry) => {
+      const prefix = { info: '[INFO]', warn: '[WARN]', error: '[ERROR]', success: '[OK]' }[entry.level] || '[LOG]';
+      console.log(prefix + ' ' + entry.message);
+    }
+  });
+
+  const taskData = JSON.parse(process.env.TASK_DATA || '{}');
+
+  const result = await cpu.execute(` + '`' + """
+    // Review Flow 示例
+    console.log("[ReviewFlow] 开始审查流程...");
+
+    const artifacts = context.task?.artifacts || [];
+    scope.set('qualityScore', 10);
+    scope.set('findings', []);
+
+    // 代码质量评估
+    for (const artifact of artifacts) {
+      const quality = await llmcall("评估代码质量", { code: artifact.content });
+      scope.set('qualityScore', Math.min(scope.qualityScore, quality.score));
+    }
+
+    metacall(scope.qualityScore >= 7, "代码质量不达标");
+
+    // 返回结果
+    { success: true, qualityScore: scope.qualityScore };
+  """ + '`' + `, {
+    taskId: context.taskId,
+    category: context.category,
+    task: taskData
+  });
+
+  console.log("\\n=== 执行结果 ===");
+  console.log("状态: " + (result.success ? "成功" : "失败"));
+  console.log("质量评分: " + result.qualityScore + "/10");
+})();
+        '''
     else:
         return "console.log('Flow type not implemented: " + flow_type + "');"
 

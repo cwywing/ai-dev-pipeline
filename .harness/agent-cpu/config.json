@@ -25,6 +25,16 @@
       "use_agent_cpu": true,
       "template_file": "dev_prompt_agent_cpu.md",
       "legacy_template_file": "dev_prompt.md"
+    },
+    "test_agent": {
+      "use_agent_cpu": true,
+      "template_file": "test_prompt_agent_cpu.md",
+      "legacy_template_file": "test_prompt.md"
+    },
+    "review_agent": {
+      "use_agent_cpu": true,
+      "template_file": "review_prompt_agent_cpu.md",
+      "legacy_template_file": "review_prompt.md"
     }
   },
   "builtins": {
