@@ -63,6 +63,9 @@ async function runCommand() {
     category = args[categoryIndex + 1];
   }
 
+  // 读取任务数据
+  const taskData = JSON.parse(process.env.TASK_DATA || '{}');
+
   const cpu = createAgentCPU({
     enableSelfHealing: true,
     enableHumanReview: false,  // CLI 模式默认关闭人工审查
@@ -82,7 +85,8 @@ async function runCommand() {
   try {
     const result = await cpu.execute(script, {
       taskId,
-      category
+      category,
+      task: taskData
     });
 
     console.log('\n=== 执行结果 ===');

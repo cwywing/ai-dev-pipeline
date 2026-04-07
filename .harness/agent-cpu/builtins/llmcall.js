@@ -190,14 +190,15 @@ async function callClaudeCLI(prompt, config) {
       }, config.timeout || 120000);
 
     } else {
-      // Unix: 直接执行
-      const args = ['-p', prompt, '--output-format', 'json'];
+      // Unix: 使用 stdin 传递 prompt（避免特殊字符转义问题）
+      const args = ['--print', '--output-format', 'json'];
       if (config.model) {
         args.push('--model', config.model);
       }
 
       const proc = spawn('claude', args, {
-        shell: false
+        shell: false,
+        stdio: ['pipe', 'pipe', 'pipe']
       });
 
       let stdout = '';
@@ -210,6 +211,10 @@ async function callClaudeCLI(prompt, config) {
       proc.stderr.on('data', (data) => {
         stderr += data.toString();
       });
+
+      // 通过 stdin 发送 prompt
+      proc.stdin.write(prompt);
+      proc.stdin.end();
 
       proc.on('close', (code) => {
         if (code === 0 || stdout.trim()) {

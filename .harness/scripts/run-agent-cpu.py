@@ -116,18 +116,23 @@ def get_agent_cpu_path():
     return agent_cpu_dir
 
 
-def run_node_command(command, timeout=300):
+def run_node_command(command, timeout=300, env=None):
     """
     运行 Node.js 命令
 
     Args:
         command: 命令列表
         timeout: 超时时间（秒）
+        env: 环境变量字典
 
     Returns:
         tuple: (returncode, stdout, stderr)
     """
     try:
+        import os
+        # 合并环境变量
+        run_env = {**os.environ, **(env or {})}
+
         result = subprocess.run(
             command,
             capture_output=True,
@@ -135,7 +140,8 @@ def run_node_command(command, timeout=300):
             encoding='utf-8',
             errors='replace',
             timeout=timeout,
-            cwd=get_agent_cpu_path()
+            cwd=get_agent_cpu_path(),
+            env=run_env
         )
         return (result.returncode, result.stdout, result.stderr)
     except subprocess.TimeoutExpired:
@@ -199,6 +205,11 @@ def execute_flow(task_id, flow_type='dev', category='general', task_data=None):
     # 尝试加载模板并注入约束
     template_content = load_template_for_flow(flow_type)
 
+    # 设置环境变量
+    run_env = {
+        'TASK_DATA': json.dumps(task_data, ensure_ascii=False)
+    }
+
     returncode, stdout, stderr = run_node_command([
         'node',
         'cli.js',
@@ -209,7 +220,7 @@ def execute_flow(task_id, flow_type='dev', category='general', task_data=None):
         task_id,
         '--category',
         category
-    ], timeout=600)
+    ], timeout=600, env=run_env)
 
     if returncode != 0:
         error(f'Agent CPU 执行失败: {stderr}', file=sys.stderr)
@@ -266,13 +277,13 @@ def get_flow_code(flow_type):
   const taskData = JSON.parse(process.env.TASK_DATA || '{}');
 
   // 定义 Dev Flow
-  const devFlow = async (scope, context) => {
+  const devFlow = async (builtins, scope, context) => {
     console.log("[DevFlow] 开始开发流程...");
     console.log("任务描述: " + (context.task?.description || '未提供'));
 
     // 分析任务
     const taskDesc = context.task?.description || '';
-    const analysis = await llmcall("你是 Dev Agent，分析以下任务并输出实现计划：\n" + taskDesc);
+    const analysis = await builtins.llmcall("你是 Dev Agent，分析以下任务并输出实现计划：\n" + taskDesc);
     scope.set('analysis', analysis);
     console.log("分析结果: " + analysis);
 
@@ -316,20 +327,59 @@ def get_flow_code(flow_type):
   const taskData = JSON.parse(process.env.TASK_DATA || '{}');
 
   // 定义 Test Flow
-  const testFlow = async (scope, context) => {
+  const testFlow = async (builtins, scope, context) => {
     console.log("[TestFlow] 开始测试流程...");
 
     const devArtifacts = context.task?.artifacts || [];
+    console.log("[TestFlow] 找到 " + devArtifacts.length + " 个文件");
     scope.set('files', devArtifacts);
     scope.set('issues', []);
 
-    // 语法检查
+    // 读取文件并检查
     for (const artifact of devArtifacts) {
       if (artifact.path && artifact.path.endsWith('.php')) {
-        const cmdResult = await runCommand('php8 -l ' + artifact.path);
-        metacall(cmdResult.exitCode === 0, "语法错误: " + artifact.path);
+        console.log("[TestFlow] 检查文件: " + artifact.path);
+
+        // 语法检查
+        const cmdResult = await builtins.runCommand('php8 -l ' + artifact.path);
+        if (cmdResult.exitCode !== 0) {
+          console.log("🚨 语法错误: " + artifact.path);
+          scope.addIssue('high', artifact.path, 'PHP 语法错误');
+        } else {
+          console.log("✅ 语法检查通过");
+        }
+
+        // 读取文件内容
+        const fs = await import('fs');
+        const content = await fs.promises.readFile(artifact.path, 'utf-8');
+
+        // 检查硬编码 Token (Hard Rule)
+        if (content.includes('sk-admin') || content.match(/TOKEN\s*=\s*["\'][^"\']+["\']/)) {
+          console.log("🚨 发现硬编码 Token!");
+          scope.addIssue('high', artifact.path, '禁止硬编码 Token: 发现明文密钥/凭证');
+        } else {
+          console.log("✅ 无硬编码 Token");
+        }
+
+        // 检查 SQL 拼接 (Hard Rule)
+        if (content.includes('DB::raw(') || content.match(/['"].*SELECT.*['"].*\+/) ||
+            content.includes('DB::select(') && content.includes("'\" . ") ||
+            content.includes('"\' . ')) {
+          console.log("🚨 发现 SQL 拼接!");
+          scope.addIssue('high', artifact.path, '禁止 SQL 拼接: 发现字符串拼接的 SQL 语句');
+        } else {
+          console.log("✅ 无 SQL 拼接");
+        }
+
+        // 检查 eval() 使用 (Hard Rule)
+        if (content.includes('eval(')) {
+          console.log("🚨 发现 eval() 使用!");
+          scope.addIssue('high', artifact.path, '禁止使用 eval() 或危险函数');
+        }
       }
     }
+
+    console.log("[TestFlow] 检查完成，发现 " + scope.issues.length + " 个问题");
 
     // 返回结果
     return { success: true, issues: scope.issues || [] };
@@ -343,7 +393,8 @@ def get_flow_code(flow_type):
 
   console.log("\n=== 执行结果 ===");
   console.log("状态: " + (result.success ? "成功" : "失败"));
-  console.log("发现的问题: " + result.issues.length + " 个");
+  const issueCount = (result.issues && result.issues.length) || 0;
+  console.log("发现的问题: " + issueCount + " 个");
 })();
         '''
     elif flow_type == 'review':
@@ -364,7 +415,7 @@ def get_flow_code(flow_type):
   const taskData = JSON.parse(process.env.TASK_DATA || '{}');
 
   // 定义 Review Flow
-  const reviewFlow = async (scope, context) => {
+  const reviewFlow = async (builtins, scope, context) => {
     console.log("[ReviewFlow] 开始审查流程...");
 
     const artifacts = context.task?.artifacts || [];

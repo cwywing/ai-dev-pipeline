@@ -16,7 +16,8 @@ export class Scope {
     this.id = Scope._generateId();
     this.variables = {};
     this.artifacts = [];       // 产出文件列表
-    this.decisions = [];      // 设计决策
+    this.decisions = [];       // 设计决策
+    this.issues = [];         // 发现的问题列表
     this.constraints = config.constraints || [];  // 约束条件
     this.metadata = config.metadata || {};
     this.createdAt = new Date().toISOString();
@@ -91,6 +92,21 @@ export class Scope {
       decision,
       reason,
       madeAt: new Date().toISOString()
+    });
+  }
+
+  /**
+   * 添加问题
+   * @param {string} severity - 严重程度 (high/medium/low)
+   * @param {string} file - 文件路径
+   * @param {string} description - 问题描述
+   */
+  addIssue(severity, file, description) {
+    this.issues.push({
+      severity,
+      file,
+      description,
+      addedAt: new Date().toISOString()
     });
   }
 

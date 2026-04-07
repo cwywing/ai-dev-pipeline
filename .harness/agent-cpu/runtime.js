@@ -143,6 +143,7 @@ export class AgentCPU {
         scope: rootScope.serialize(),
         artifacts: rootScope.artifacts,
         decisions: rootScope.decisions,
+        issues: rootScope.issues,
         duration: Date.now() - this.startTime,
         executionLog: this.executionLog
       };
@@ -279,6 +280,41 @@ export class AgentCPU {
         return true;
       },
       readFile: (filePath) => fs.readFile(filePath, 'utf-8'),
+
+      // 命令执行
+      runCommand: async (command) => {
+        const { spawn } = await import('child_process');
+        const isWindows = process.platform === 'win32';
+        const shell = isWindows ? 'cmd.exe' : '/bin/bash';
+        const shellArgs = isWindows ? ['/c', command] : ['-c', command];
+
+        return new Promise((resolve) => {
+          const proc = spawn(shell, shellArgs, {
+            timeout: 30000,
+            shell: false,
+            windowsHide: true
+          });
+
+          let stdout = '';
+          let stderr = '';
+
+          proc.stdout.on('data', (data) => { stdout += data.toString(); });
+          proc.stderr.on('data', (data) => { stderr += data.toString(); });
+
+          proc.on('close', (code) => {
+            resolve({ exitCode: code, stdout, stderr });
+          });
+
+          proc.on('error', (err) => {
+            resolve({ exitCode: -1, stdout: '', stderr: err.message });
+          });
+
+          setTimeout(() => {
+            proc.kill();
+            resolve({ exitCode: -1, stdout, stderr: 'Command timeout' });
+          }, 30000);
+        });
+      },
 
       // 工具函数
       sleep: (ms) => new Promise(r => setTimeout(r, ms)),
