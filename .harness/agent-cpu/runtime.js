@@ -294,15 +294,37 @@ export class AgentCPU {
 
       // 文件操作
       writeFile: async (filePath, content) => {
-        await fs.writeFile(filePath, content, 'utf-8');
-        scope.addArtifact(filePath, { type: 'file' });
-        this._log('info', `文件已写入: ${filePath}`);
+        // 规范化路径：处理 Git Bash 风格的 /c/... 路径
+        let normalizedPath = filePath;
+        if (process.platform === 'win32') {
+          // /c/Users/... -> C:\Users\...
+          normalizedPath = filePath.replace(/^\/([a-z])\//i, (match, drive) => `${drive.toUpperCase()}:/`);
+          // 确保使用正斜杠（Node.js 在 Windows 上推荐）
+          normalizedPath = normalizedPath.replace(/\\/g, '/');
+        }
+        await fs.writeFile(normalizedPath, content, 'utf-8');
+        scope.addArtifact(normalizedPath, { type: 'file' });
+        this._log('info', `文件已写入: ${normalizedPath}`);
         return true;
       },
-      readFile: (filePath) => fs.readFile(filePath, 'utf-8'),
+      readFile: (filePath) => {
+        // 规范化路径：处理 Git Bash 风格的 /c/... 路径
+        let normalizedPath = filePath;
+        if (process.platform === 'win32') {
+          normalizedPath = filePath.replace(/^\/([a-z])\//i, (match, drive) => `${drive.toUpperCase()}:/`);
+          normalizedPath = normalizedPath.replace(/\\/g, '/');
+        }
+        return fs.readFile(normalizedPath, 'utf-8');
+      },
       mkdir: async (dirPath, opts) => {
-        await fs.mkdir(dirPath, opts);
-        this._log('info', `目录已创建: ${dirPath}`);
+        // 规范化路径：处理 Git Bash 风格的 /c/... 路径
+        let normalizedPath = dirPath;
+        if (process.platform === 'win32') {
+          normalizedPath = dirPath.replace(/^\/([a-z])\//i, (match, drive) => `${drive.toUpperCase()}:/`);
+          normalizedPath = normalizedPath.replace(/\\/g, '/');
+        }
+        await fs.mkdir(normalizedPath, opts);
+        this._log('info', `目录已创建: ${normalizedPath}`);
         return true;
       },
 
@@ -310,8 +332,15 @@ export class AgentCPU {
       runCommand: async (command) => {
         const { spawn } = await import('child_process');
         const isWindows = process.platform === 'win32';
-        const shell = isWindows ? 'cmd.exe' : '/bin/bash';
-        const shellArgs = isWindows ? ['/c', command] : ['-c', command];
+
+        // Windows 下使用 Git Bash（MSYS2）以支持 Unix 风格路径和命令
+        // 常见路径：/usr/bin/bash (Git for Windows), /bin/bash (WSL)
+        let shell;
+        if (isWindows) {
+          shell = '/usr/bin/bash';
+        } else {
+          shell = '/bin/bash';
+        }
 
         const compactLog = (log, maxLines = 100) => {
           if (!log) return '';

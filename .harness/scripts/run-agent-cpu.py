@@ -313,16 +313,22 @@ def get_flow_code(flow_type):
     if flow_type == 'dev':
         return r'''
 // ============================================================
-// Dev Flow - Agent Loop with Tool Use
+// Dev Flow - Agent Loop with Tool Use + Git Auto-Commit
 // ============================================================
 
 const MAX_ITERATIONS = 10;
 const taskId = context.taskId || 'unknown';
 const taskDesc = context.task?.description || '未提供';
 const isWindows = process.platform === 'win32';
-const workspaceDir = isWindows
-  ? `.harness\\agent-cpu\\workspace\\${taskId}`
-  : `.harness/agent-cpu/workspace/${taskId}`;
+
+// 支持外部工作区配置（AGENT_WORKSPACE_ROOT）
+// 外部工作区: C:/wwwroot/ai-dev-workspace (项目外部，独立 Git)
+// 项目内工作区: .harness/agent-cpu/workspace (备用)
+const defaultWorkspaceRoot = isWindows
+  ? `C:/wwwroot/ai-dev-workspace`
+  : `/c/wwwroot/ai-dev-workspace`;
+const workspaceRoot = process.env.AGENT_WORKSPACE_ROOT || defaultWorkspaceRoot;
+const workspaceDir = `${workspaceRoot}/${taskId}`;
 
 // 定义工具 Schema
 const tools = [
@@ -386,8 +392,12 @@ let iteration = 0;
 
 console.log(`[DevFlow] 开始 Agent Loop，任务: ${taskId}`);
 console.log(`[DevFlow] 任务描述: ${taskDesc}`);
+console.log(`[DevFlow] 工作区: ${workspaceDir}`);
 
-// 创建工作区
+// 创建工作区根目录（如果不存在）
+await builtins.mkdir(workspaceRoot, { recursive: true });
+
+// 创建任务目录
 await builtins.mkdir(workspaceDir, { recursive: true });
 
 // 构建初始 system prompt
@@ -430,6 +440,16 @@ while (iteration < MAX_ITERATIONS && !finished) {
     });
 
     console.log(`[DevFlow] LLM stop_reason: ${response.stop_reason}`);
+
+    // 防御性检查：确保响应结构完整
+    if (!response || !response.content) {
+      console.warn(`[DevFlow] LLM 响应格式异常，跳过此次迭代`);
+      messages.push({
+        role: 'user',
+        content: '请继续执行任务，刚才的响应格式有误。'
+      });
+      continue;
+    }
 
     // 1. 洗白 Assistant 历史：提取纯文本或思维过程，彻底丢弃 tool_use 对象
     // 这样 MiniMax 的校验器就不会在历史中发现工具调用，从而绕过 400/500 报错
@@ -538,10 +558,105 @@ if (!finished) {
 console.log(`\n[DevFlow] Agent Loop 完成，共 ${iteration} 次迭代`);
 console.log(`[DevFlow] 产出文件: ${artifacts.join(', ')}`);
 
+// ============================================================
+// Git 自动版本控制
+// ============================================================
+async function autoGitCommit() {
+  try {
+    // 1. 尝试检查 Git 仓库状态（如果不存在会失败）
+    const gitDirCheck = await builtins.runCommand(
+      isWindows
+        ? `git -C "${workspaceRoot}" rev-parse --git-dir`
+        : `git -C "${workspaceRoot}" rev-parse --git-dir`
+    );
+
+    const gitDirExists = gitDirCheck.exitCode === 0;
+
+    if (!gitDirExists) {
+      // 2. 初始化 Git 仓库
+      console.log(`[Git] 工作区尚未初始化 Git，正在初始化...`);
+      const initResult = await builtins.runCommand(
+        isWindows
+          ? `git -C "${workspaceRoot}" init`
+          : `git -C "${workspaceRoot}" init`
+      );
+      if (initResult.exitCode !== 0) {
+        console.warn(`[Git] git init 失败: ${initResult.stderr}`);
+        return;
+      }
+      console.log(`[Git] Git 仓库初始化成功`);
+
+      // 3. 配置 Git 用户
+      await builtins.runCommand(
+        isWindows
+          ? `git -C "${workspaceRoot}" config user.email "agent@ai-dev-pipeline"`
+          : `git -C "${workspaceRoot}" config user.email "agent@ai-dev-pipeline"`
+      );
+      await builtins.runCommand(
+        isWindows
+          ? `git -C "${workspaceRoot}" config user.name "Agent CPU"`
+          : `git -C "${workspaceRoot}" config user.name "Agent CPU"`
+      );
+    }
+
+    // 4. 添加所有文件
+    console.log(`[Git] 添加文件到暂存区...`);
+    await builtins.runCommand(
+      isWindows
+        ? `git -C "${workspaceRoot}" add .`
+        : `git -C "${workspaceRoot}" add .`
+    );
+
+    // 5. 检查是否有文件变更
+    const statusResult = await builtins.runCommand(
+      isWindows
+        ? `git -C "${workspaceRoot}" status --porcelain`
+        : `git -C "${workspaceRoot}" status --porcelain`
+    );
+
+    if (!statusResult.stdout.trim()) {
+      console.log(`[Git] 没有文件变更，跳过提交`);
+      return;
+    }
+
+    // 6. 执行提交
+    console.log(`[Git] 提交更改...`);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const commitMsg = `auto-commit: 任务 ${taskId} 执行完成 [${timestamp}]`;
+
+    const commitResult = await builtins.runCommand(
+      isWindows
+        ? `git -C "${workspaceRoot}" commit -m "${commitMsg}"`
+        : `git -C "${workspaceRoot}" commit -m "${commitMsg}"`
+    );
+
+    if (commitResult.exitCode === 0) {
+      console.log(`[Git] ✅ 提交成功: ${commitMsg}`);
+      // 显示提交 hash
+      const hashResult = await builtins.runCommand(
+        isWindows
+          ? `git -C "${workspaceRoot}" rev-parse HEAD`
+          : `git -C "${workspaceRoot}" rev-parse HEAD`
+      );
+      console.log(`[Git] 提交 Hash: ${hashResult.stdout.trim()}`);
+    } else {
+      console.warn(`[Git] 提交失败: ${commitResult.stderr}`);
+    }
+
+  } catch (err) {
+    console.warn(`[Git] Git 自动提交异常: ${err.message}`);
+    // Git 失败不影响主流程
+  }
+}
+
+// 执行 Git 自动提交
+await autoGitCommit();
+
 return {
   success: true,
   artifacts: artifacts.map(path => ({ path, type: 'file' })),
-  iterations: iteration
+  iterations: iteration,
+  workspace: workspaceDir
 };
 '''
     elif flow_type == 'test':
