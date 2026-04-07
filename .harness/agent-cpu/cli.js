@@ -9,8 +9,38 @@
  *   node cli.js review --request review_id --approve
  */
 
-import 'dotenv/config';
+// 加载 .env 文件，强制覆盖 Claude Code 代理设置
+import { readFileSync } from 'fs';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const envPath = resolve(__dirname, '.env');
+try {
+  const envContent = readFileSync(envPath, 'utf-8');
+  for (const line of envContent.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed && !trimmed.startsWith('#') && trimmed.includes('=')) {
+      const [key, ...valueParts] = trimmed.split('=');
+      const value = valueParts.join('=');
+      // 强制覆盖（Claude Code 的 PROXY_MANAGED 等值）
+      if (key.trim()) process.env[key.trim()] = value.trim();
+    }
+  }
+} catch (_) {}
+
 import { AgentCPU, createAgentCPU } from './runtime.js';
+
+/**
+ * Agent CPU CLI - 命令行入口
+ *
+ * 用于测试和调试 Agent CPU
+ *
+ * 使用方法:
+ *   node cli.js run --script path/to/script.js
+ *   node cli.js run --code "await llmcall('hello')"
+ *   node cli.js review --request review_id --approve
+ */
 import { humanReviewManager, ReviewResult } from './human-review.js';
 import { knowledgeBase } from './knowledge-base.js';
 import fs from 'fs/promises';

@@ -319,7 +319,10 @@ def get_flow_code(flow_type):
 const MAX_ITERATIONS = 10;
 const taskId = context.taskId || 'unknown';
 const taskDesc = context.task?.description || '未提供';
-const workspaceDir = `.harness/agent-cpu/workspace/${taskId}`;
+const isWindows = process.platform === 'win32';
+const workspaceDir = isWindows
+  ? `.harness\\agent-cpu\\workspace\\${taskId}`
+  : `.harness/agent-cpu/workspace/${taskId}`;
 
 // 定义工具 Schema
 const tools = [
@@ -421,20 +424,26 @@ while (iteration < MAX_ITERATIONS && !finished) {
       system: systemPrompt,
       messages: messages.length > 0 ? messages : [{ role: 'user', content: '请开始执行任务。' }],
       tools,
-      model: 'claude-sonnet-4-20250514',
+      model: process.env.ANTHROPIC_DEFAULT_SONNET_MODEL || 'MiniMax-M2.7',
       max_tokens: 8192,
       returnRawResponse: true  // 需要完整响应以提取 tool_use
     });
 
     console.log(`[DevFlow] LLM stop_reason: ${response.stop_reason}`);
 
-    // 将 assistant 的回复加入历史
+    // 1. 洗白 Assistant 历史：提取纯文本或思维过程，彻底丢弃 tool_use 对象
+    // 这样 MiniMax 的校验器就不会在历史中发现工具调用，从而绕过 400/500 报错
+    const assistantText = response.content
+      .filter(block => block.type === 'text' || block.type === 'thinking')
+      .map(b => b.text || b.thinking)
+      .join('\n');
+
     messages.push({
       role: 'assistant',
-      content: response.content
+      content: assistantText || '我已分析现状，现在开始执行工具操作。'
     });
 
-    // 处理 tool_use
+    // 2. 处理 tool_use 并执行工具
     if (response.stop_reason === 'tool_use') {
       const toolUses = response.content.filter(block => block.type === 'tool_use');
       const toolResults = [];
@@ -493,10 +502,14 @@ while (iteration < MAX_ITERATIONS && !finished) {
         });
       }
 
-      // 将工具执行结果追加到 messages
+      // 3. 洗白 User 回传：用纯文本告知执行结果，不使用 tool_result 结构
+      const fallbackText = `[系统回传] 你刚才调用的工具已执行完毕。\n\n执行结果如下：\n` +
+        toolResults.map(tr => `工具: ${tr.tool_use_id}\n状态: ${tr.is_error ? '失败' : '成功'}\n内容:\n${tr.content}`).join('\n\n') +
+        `\n\n请根据上述结果继续执行任务。如果任务已全部完成且无报错，请调用 finish_task。`;
+
       messages.push({
         role: 'user',
-        content: toolResults
+        content: fallbackText
       });
 
     } else if (response.stop_reason === 'end_turn') {
