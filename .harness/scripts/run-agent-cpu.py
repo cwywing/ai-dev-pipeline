@@ -294,6 +294,9 @@ def execute_flow(task_id, flow_type='dev', category='general', task_data=None):
         if stdout:
             print(stdout)
 
+        # Git 自动提交（使用 Python subprocess，直接可靠）
+        _auto_git_commit(task_id, flow_type)
+
         return {
             'success': True,
             'taskId': task_id,
@@ -306,6 +309,88 @@ def execute_flow(task_id, flow_type='dev', category='general', task_data=None):
             'taskId': task_id,
             'output': stdout
         }
+
+
+def _auto_git_commit(task_id, flow_type):
+    """Python 层的 Git 自动提交（参考 run-automation-stages.py）"""
+    try:
+        import os
+        import subprocess
+
+        # 获取项目根目录
+        project_root = os.environ.get('AGENT_PROJECT_ROOT')
+        if not project_root:
+            # 默认值
+            is_windows = sys.platform == 'win32'
+            project_root = 'C:/wwwroot/ai-dev-workspace' if is_windows else '/c/wwwroot/ai-dev-workspace'
+
+        # 检查 .git 目录是否存在
+        git_dir = os.path.join(project_root, '.git')
+        if not os.path.isdir(git_dir):
+            info(f'[Git] 项目目录 {project_root} 尚未初始化 Git，跳过提交', file=sys.stderr)
+            return
+
+        # git add -A
+        subprocess.run(
+            ['git', 'add', '-A', '.'],
+            capture_output=True,
+            cwd=project_root
+        )
+
+        # 检查是否有变更
+        result = subprocess.run(
+            ['git', 'status', '--porcelain'],
+            capture_output=True,
+            cwd=project_root
+        )
+        # 处理 Windows GBK 编码问题
+        try:
+            status_output = result.stdout.decode('utf-8', errors='replace')
+        except Exception:
+            status_output = ''
+        if not status_output.strip():
+            info(f'[Git] 没有文件变更，跳过提交', file=sys.stderr)
+            return
+
+        # 获取任务描述作为提交信息
+        task_desc = _get_task_description(task_id)
+        commit_msg = f'{task_id}: {task_desc}'
+
+        # git commit
+        result = subprocess.run(
+            ['git', 'commit', '-m', commit_msg],
+            capture_output=True,
+            cwd=project_root
+        )
+
+        if result.returncode == 0:
+            success(f'[Git] ✅ 已提交: {commit_msg}', file=sys.stderr)
+        else:
+            try:
+                stderr_output = result.stderr.decode('utf-8', errors='replace')
+            except Exception:
+                stderr_output = ''
+            if 'nothing to commit' in stderr_output.lower():
+                info(f'[Git] 没有变更需要提交', file=sys.stderr)
+            else:
+                warning(f'[Git] 提交失败: {stderr_output}', file=sys.stderr)
+
+    except Exception as e:
+        warning(f'[Git] Git 自动提交异常: {e}', file=sys.stderr)
+
+
+def _get_task_description(task_id):
+    """获取任务描述"""
+    try:
+        harness_dir = Path(__file__).parent.parent.resolve()
+        task_file = harness_dir / 'tasks' / 'pending' / f'{task_id}.json'
+        if task_file.exists():
+            with open(task_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return data.get('d', '')[:100]  # 截取前100字符
+    except Exception:
+        pass
+    return '任务完成'
 
 
 def get_flow_code(flow_type):
@@ -321,14 +406,14 @@ const taskId = context.taskId || 'unknown';
 const taskDesc = context.task?.description || '未提供';
 const isWindows = process.platform === 'win32';
 
-// 支持外部工作区配置（AGENT_WORKSPACE_ROOT）
-// 外部工作区: C:/wwwroot/ai-dev-workspace (项目外部，独立 Git)
-// 项目内工作区: .harness/agent-cpu/workspace (备用)
-const defaultWorkspaceRoot = isWindows
-  ? `C:/wwwroot/ai-dev-workspace`
-  : `/c/wwwroot/ai-dev-workspace`;
-const workspaceRoot = process.env.AGENT_WORKSPACE_ROOT || defaultWorkspaceRoot;
-const workspaceDir = `${workspaceRoot}/${taskId}`;
+// 工作区配置：
+// AGENT_PROJECT_ROOT - 项目根目录（所有任务产物放在同一项目下）
+// 默认为外部工作区根目录，不按任务ID分目录
+const projectRoot = process.env.AGENT_PROJECT_ROOT ||
+  (isWindows ? 'C:/wwwroot/ai-dev-workspace' : '/c/wwwroot/ai-dev-workspace');
+
+// 产物直接放在项目根目录，不创建任务子目录
+// 工作目录用于临时检查
 
 // 定义工具 Schema
 const tools = [
@@ -392,13 +477,10 @@ let iteration = 0;
 
 console.log(`[DevFlow] 开始 Agent Loop，任务: ${taskId}`);
 console.log(`[DevFlow] 任务描述: ${taskDesc}`);
-console.log(`[DevFlow] 工作区: ${workspaceDir}`);
+console.log(`[DevFlow] 项目目录: ${projectRoot}`);
 
-// 创建工作区根目录（如果不存在）
-await builtins.mkdir(workspaceRoot, { recursive: true });
-
-// 创建任务目录
-await builtins.mkdir(workspaceDir, { recursive: true });
+// 创建项目根目录（如果不存在）
+await builtins.mkdir(projectRoot, { recursive: true });
 
 // 构建初始 system prompt
 const systemPrompt = `你是一个自主开发 Agent。你的任务是：
@@ -413,7 +495,7 @@ ${taskDesc}
 
 工作流程：
 1. 分析任务需求
-2. 编写代码并保存到 ${workspaceDir}/ 目录
+2. 编写代码并保存到 ${projectRoot}/ 目录
 3. 使用 run_command 检查语法（如 php -l file.php）
 4. 如果有错误，读取文件、修复、重新保存
 5. 确认无误后调用 finish_task
@@ -558,105 +640,11 @@ if (!finished) {
 console.log(`\n[DevFlow] Agent Loop 完成，共 ${iteration} 次迭代`);
 console.log(`[DevFlow] 产出文件: ${artifacts.join(', ')}`);
 
-// ============================================================
-// Git 自动版本控制
-// ============================================================
-async function autoGitCommit() {
-  try {
-    // 1. 尝试检查 Git 仓库状态（如果不存在会失败）
-    const gitDirCheck = await builtins.runCommand(
-      isWindows
-        ? `git -C "${workspaceRoot}" rev-parse --git-dir`
-        : `git -C "${workspaceRoot}" rev-parse --git-dir`
-    );
-
-    const gitDirExists = gitDirCheck.exitCode === 0;
-
-    if (!gitDirExists) {
-      // 2. 初始化 Git 仓库
-      console.log(`[Git] 工作区尚未初始化 Git，正在初始化...`);
-      const initResult = await builtins.runCommand(
-        isWindows
-          ? `git -C "${workspaceRoot}" init`
-          : `git -C "${workspaceRoot}" init`
-      );
-      if (initResult.exitCode !== 0) {
-        console.warn(`[Git] git init 失败: ${initResult.stderr}`);
-        return;
-      }
-      console.log(`[Git] Git 仓库初始化成功`);
-
-      // 3. 配置 Git 用户
-      await builtins.runCommand(
-        isWindows
-          ? `git -C "${workspaceRoot}" config user.email "agent@ai-dev-pipeline"`
-          : `git -C "${workspaceRoot}" config user.email "agent@ai-dev-pipeline"`
-      );
-      await builtins.runCommand(
-        isWindows
-          ? `git -C "${workspaceRoot}" config user.name "Agent CPU"`
-          : `git -C "${workspaceRoot}" config user.name "Agent CPU"`
-      );
-    }
-
-    // 4. 添加所有文件
-    console.log(`[Git] 添加文件到暂存区...`);
-    await builtins.runCommand(
-      isWindows
-        ? `git -C "${workspaceRoot}" add .`
-        : `git -C "${workspaceRoot}" add .`
-    );
-
-    // 5. 检查是否有文件变更
-    const statusResult = await builtins.runCommand(
-      isWindows
-        ? `git -C "${workspaceRoot}" status --porcelain`
-        : `git -C "${workspaceRoot}" status --porcelain`
-    );
-
-    if (!statusResult.stdout.trim()) {
-      console.log(`[Git] 没有文件变更，跳过提交`);
-      return;
-    }
-
-    // 6. 执行提交
-    console.log(`[Git] 提交更改...`);
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const commitMsg = `auto-commit: 任务 ${taskId} 执行完成 [${timestamp}]`;
-
-    const commitResult = await builtins.runCommand(
-      isWindows
-        ? `git -C "${workspaceRoot}" commit -m "${commitMsg}"`
-        : `git -C "${workspaceRoot}" commit -m "${commitMsg}"`
-    );
-
-    if (commitResult.exitCode === 0) {
-      console.log(`[Git] ✅ 提交成功: ${commitMsg}`);
-      // 显示提交 hash
-      const hashResult = await builtins.runCommand(
-        isWindows
-          ? `git -C "${workspaceRoot}" rev-parse HEAD`
-          : `git -C "${workspaceRoot}" rev-parse HEAD`
-      );
-      console.log(`[Git] 提交 Hash: ${hashResult.stdout.trim()}`);
-    } else {
-      console.warn(`[Git] 提交失败: ${commitResult.stderr}`);
-    }
-
-  } catch (err) {
-    console.warn(`[Git] Git 自动提交异常: ${err.message}`);
-    // Git 失败不影响主流程
-  }
-}
-
-// 执行 Git 自动提交
-await autoGitCommit();
-
 return {
   success: true,
   artifacts: artifacts.map(path => ({ path, type: 'file' })),
   iterations: iteration,
-  workspace: workspaceDir
+  projectRoot: projectRoot
 };
 '''
     elif flow_type == 'test':

@@ -333,14 +333,18 @@ export class AgentCPU {
         const { spawn } = await import('child_process');
         const isWindows = process.platform === 'win32';
 
-        // Windows 下使用 Git Bash（MSYS2）以支持 Unix 风格路径和命令
-        // 常见路径：/usr/bin/bash (Git for Windows), /bin/bash (WSL)
-        let shell;
+        // 规范化命令：Windows 下将 Unix 风格路径转换为 Windows 路径
+        let normalizedCommand = command;
         if (isWindows) {
-          shell = '/usr/bin/bash';
-        } else {
-          shell = '/bin/bash';
+          // 简单处理：将 /c/ 转换为 C:\，将其他 / 转换为 \
+          normalizedCommand = command.replace(/^\/([a-z])\//i, (m, d) => `${d.toUpperCase()}:\\`);
+          normalizedCommand = normalizedCommand.replace(/\//g, '\\');
+          // 避免双反斜杠
+          normalizedCommand = normalizedCommand.replace(/\\\\/g, '\\');
         }
+
+        const shell = isWindows ? 'cmd.exe' : '/bin/bash';
+        const shellArgs = isWindows ? ['/c', normalizedCommand] : ['-c', command];
 
         const compactLog = (log, maxLines = 100) => {
           if (!log) return '';
