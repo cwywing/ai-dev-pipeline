@@ -1,12 +1,26 @@
 {
-  "version": 1,
-  "updated_at": null,
-  "global": [
-    "所有 API 必须使用 API Resource 格式化响应",
-    "所有验证必须使用 FormRequest",
-    "业务逻辑必须在 Service 层，Controller 保持精简",
-    "使用 DatabaseTransactions trait 进行测试",
-    "禁止在 Controller 中直接访问 Model"
-  ],
-  "per_module": {}
+  "version": 2,
+  "updated_at": "2026-04-07",
+  "moat": {
+    "description": "硬性红线 - 违反则立即终止流程",
+    "hard_rules": [
+      "禁止 SQL 拼接，必须使用参数绑定或 Eloquent ORM",
+      "禁止硬编码密钥/凭证到代码中（如 API_KEY、密码、Token）",
+      "禁止在生产环境直接执行数据库迁移（migrate:fresh/dangerous）",
+      "禁止使用 eval() 或危险函数执行动态代码",
+      "禁止跳过 CSRF 验证（除了明确的 API 白名单路由）"
+    ]
+  },
+  "guidelines": {
+    "description": "软性建议 - 违反会警告但不会终止",
+    "rules": [
+      "业务逻辑必须放在 Service 层，Controller 保持精简",
+      "所有验证必须使用 FormRequest",
+      "使用 DatabaseTransactions trait 进行测试隔离",
+      "禁止在 Controller 中直接访问 Model（通过 Service 间接访问）",
+      "优先使用 Laravel 特性而非第三方包（如 Policy 而非自定义权限）",
+      "数据库查询必须考虑索引和性能",
+      "禁止过度设计 (No Over-engineering)，保持代码简单直接，满足当前需求即可，严禁为了未来的扩展性而提前引入不必要的设计模式或复杂的抽象层次"
+    ]
+  }
 }

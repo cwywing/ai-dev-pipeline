@@ -21,6 +21,94 @@ sys.path.insert(0, str(Path(__file__).parent))
 from console_output import success, error, warning, info
 
 
+# ============================================================
+# 约束注入模块
+# ============================================================
+
+def load_constraints():
+    """加载知识库约束"""
+    script_dir = Path(__file__).parent
+    constraints_path = script_dir.parent / 'knowledge' / 'constraints.json'
+
+    if constraints_path.exists():
+        try:
+            with open(constraints_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return None
+    return None
+
+
+def inject_constraints(constraints, prompt_content):
+    """
+    将约束注入到 Prompt 中
+
+    Args:
+        constraints: 约束数据字典
+        prompt_content: 原始 Prompt 内容
+
+    Returns:
+        str: 注入约束后的 Prompt
+    """
+    if not constraints:
+        return prompt_content
+
+    # 注入 Hard Rules (Moat)
+    hard_rules_md = ""
+    if 'moat' in constraints and 'hard_rules' in constraints['moat']:
+        rules = constraints['moat']['hard_rules']
+        hard_rules_md = "\n".join([
+            f"> 🚨 **{rule}**"
+            for rule in rules
+        ])
+        prompt_content = prompt_content.replace(
+            "{CONSTRAINTS_MOAT}",
+            f"\n> ## 🚨 HARD RULES (一票否决)\n{hard_rules_md}\n"
+        )
+
+    # 注入 Guidelines
+    guidelines_md = ""
+    if 'guidelines' in constraints and 'rules' in constraints['guidelines']:
+        rules = constraints['guidelines']['rules']
+        guidelines_md = "\n".join([
+            f"- {rule}"
+            for rule in rules
+        ])
+        prompt_content = prompt_content.replace(
+            "{CONSTRAINTS_GUIDE}",
+            f"\n## 📋 Guidelines\n{guidelines_md}\n"
+        )
+
+    return prompt_content
+
+
+def load_template_for_flow(flow_type):
+    """
+    加载并注入约束的 Prompt 模板
+
+    Args:
+        flow_type: 流程类型 (dev/test/review)
+
+    Returns:
+        str: 处理后的 Prompt 模板内容
+    """
+    script_dir = Path(__file__).parent
+    template_path = script_dir.parent / 'templates' / f'{flow_type}_prompt_agent_cpu.md'
+
+    if template_path.exists():
+        try:
+            with open(template_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            # 加载约束并注入
+            constraints = load_constraints()
+            return inject_constraints(constraints, content)
+        except Exception:
+            pass
+
+    return None
+
+
 def get_agent_cpu_path():
     """获取 Agent CPU 目录路径"""
     script_dir = Path(__file__).parent
@@ -93,16 +181,23 @@ def execute_flow(task_id, flow_type='dev', category='general', task_data=None):
     if task_data is None:
         task_data = {}
 
+    # 加载约束并注入到流程上下文
+    constraints = load_constraints()
+
     # 构建任务上下文
     context = {
         'taskId': task_id,
         'category': category,
         'flowType': flow_type,
-        'task': task_data
+        'task': task_data,
+        'constraints': constraints  # 传递给 Agent CPU
     }
 
     # 调用 Node.js CLI 执行
     info(f'执行 Agent CPU 流程: {task_id} ({flow_type})', file=sys.stderr)
+
+    # 尝试加载模板并注入约束
+    template_content = load_template_for_flow(flow_type)
 
     returncode, stdout, stderr = run_node_command([
         'node',
