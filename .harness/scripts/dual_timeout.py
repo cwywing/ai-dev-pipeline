@@ -49,6 +49,9 @@ _IS_WINDOWS = platform.system() == "Windows"
 class _UnixExecutor:
     """基于伪终端的执行器（Linux / macOS）"""
 
+    def __init__(self, cwd: Optional[Path] = None):
+        self.cwd = cwd
+
     def execute(self, cmd: list, input_content: str,
                 hard_timeout: int, silence_timeout: int,
                 verbose: bool = False) -> int:
@@ -64,6 +67,7 @@ class _UnixExecutor:
             proc = subprocess.Popen(
                 cmd, stdin=subprocess.PIPE,
                 stdout=slave_fd, stderr=slave_fd,
+                cwd=str(self.cwd) if self.cwd else None,
                 text=False, close_fds=False,
             )
             os.close(slave_fd)
@@ -184,6 +188,9 @@ class _UnixExecutor:
 class _WindowsExecutor:
     """基于 threading 的执行器（Windows）"""
 
+    def __init__(self, cwd: Optional[Path] = None):
+        self.cwd = cwd
+
     def execute(self, cmd: list, input_content: str,
                 hard_timeout: int, silence_timeout: int,
                 verbose: bool = False) -> int:
@@ -197,6 +204,7 @@ class _WindowsExecutor:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
+                cwd=str(self.cwd) if self.cwd else None,
                 text=False, bufsize=0,
             )
         except Exception as e:
@@ -347,24 +355,27 @@ class DualTimeoutExecutor:
 
     def __init__(self, hard_timeout: int = 300,
                  silence_timeout: int = 120,
-                 verbose: bool = False):
+                 verbose: bool = False,
+                 cwd: Optional[Path] = None):
         """
         Args:
             hard_timeout: 硬超时上限（秒）
             silence_timeout: 活性超时（秒），无输出则终止
             verbose: 调试日志
+            cwd: 子进程工作目录（默认为 PROJECT_ROOT）
         """
         self.hard_timeout = hard_timeout
         self.silence_timeout = silence_timeout
         self.verbose = verbose
+        self.cwd = cwd
 
         # 选择平台实现
         if _IS_WINDOWS:
-            self._impl = _WindowsExecutor()
+            self._impl = _WindowsExecutor(cwd=cwd)
             if verbose:
                 app_logger.debug("DualTimeout: 使用 Windows 实现")
         else:
-            self._impl = _UnixExecutor()
+            self._impl = _UnixExecutor(cwd=cwd)
             if verbose:
                 app_logger.debug("DualTimeout: 使用 Unix PTY 实现")
 

@@ -49,6 +49,7 @@ _scripts_dir = Path(__file__).parent.resolve()
 sys.path.insert(0, str(_scripts_dir.parent))
 
 from scripts.config import (
+    ENGINE_ROOT,
     PROJECT_ROOT,
     HARNESS_DIR,
     LOG_DIR,
@@ -233,15 +234,24 @@ class AutomationEngine:
         组装传递给 Claude CLI 的 Prompt
 
         组成:
-        0. project-config.json 项目全局约定（如果已配置）
-        1. CLAUDE.md 项目规范（如果存在）
+        0. [SYSTEM DIRECTORY CONTEXT] 工作区与引擎路径隔离说明
+        0.5. project-config.json 项目全局约定
+        1. CLAUDE.md 项目规范
         1.5. 依赖上下文（depends_on 前置任务的产出）
-        2. 阶段专用模板（如果存在）
-        3. 任务上下文（description, acceptance, issues）
+        2. 阶段专用模板
+        3. 任务上下文
         """
         parts = []
 
-        # 0. 项目全局约定（最高优先级，确保 Agent 首先看到）
+        # 0. 系统目录上下文（确保 Agent 知道在哪里写代码）
+        parts.append(
+            "# [SYSTEM DIRECTORY CONTEXT]\n\n"
+            f"Your current working directory for writing business code is: `{PROJECT_ROOT}`\n\n"
+            f"The Automation Engine and Requirement Documents are located at: `{HARNESS_DIR}`\n\n"
+            "(Use absolute paths if you need to read PRD documents from the Engine directory.)"
+        )
+
+        # 0.5. 项目全局约定
         project_cfg_text = format_project_config_for_prompt(get_project_config())
         if project_cfg_text:
             parts.append(project_cfg_text)
@@ -500,11 +510,12 @@ class AutomationEngine:
             encoding="utf-8",
         )
 
-        # 实例化执行器并执行
+        # 实例化执行器并执行（cwd=PROJECT_ROOT 确保代码写到工作区）
         executor = DualTimeoutExecutor(
             hard_timeout=hard,
             silence_timeout=silence,
             verbose=self.verbose,
+            cwd=PROJECT_ROOT,
         )
 
         exit_code = executor.execute(cmd, prompt)

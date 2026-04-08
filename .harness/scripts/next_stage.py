@@ -39,6 +39,7 @@ sys.path.insert(0, str(_scripts_dir.parent))
 
 from scripts.config import (
     HARNESS_DIR,
+    PROJECT_ROOT,
     TASKS_DIR,
     ENABLE_AUTO_VALIDATION,
 )
@@ -227,7 +228,7 @@ def _auto_execute_validation(task_id: str, task: dict,
             command, shell=True,
             capture_output=True, text=True,
             encoding="utf-8", errors="replace",
-            timeout=600, cwd=HARNESS_DIR.parent,
+            timeout=600, cwd=PROJECT_ROOT,
         )
 
         if result.returncode == 0:

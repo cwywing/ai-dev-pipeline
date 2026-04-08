@@ -3,6 +3,7 @@
 
 from .config import (
     HARNESS_DIR,
+    ENGINE_ROOT,
     PROJECT_ROOT,
     LOG_DIR,
     CLI_IO_DIR,
@@ -26,6 +27,7 @@ from .logger import app_logger, LogConfig
 
 __all__ = [
     "HARNESS_DIR",
+    "ENGINE_ROOT",
     "PROJECT_ROOT",
     "LOG_DIR",
     "CLI_IO_DIR",

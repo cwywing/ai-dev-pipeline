@@ -30,9 +30,7 @@ SCRIPTS_DIR = Path(__file__).parent.resolve()
 
 HARNESS_DIR = SCRIPTS_DIR.parent
 
-PROJECT_ROOT = HARNESS_DIR.parent
-
-# 核心数据与日志目录
+# 核心数据与日志目录 — 严格绑定在 HARNESS_DIR 下
 LOG_DIR = HARNESS_DIR / "logs" / "automation"
 CLI_IO_DIR = HARNESS_DIR / "cli-io"
 TASKS_DIR = HARNESS_DIR / "tasks"
@@ -49,6 +47,9 @@ for d in [LOG_DIR, CLI_IO_DIR, TASKS_DIR, KNOWLEDGE_DIR, ARTIFACTS_DIR]:
 # 2. 环境变量加载 (Environment Variables)
 # ==========================================
 
+# 引擎根目录：HARNESS_DIR 的父级（存放 .gitignore 等）
+ENGINE_ROOT = HARNESS_DIR.parent
+
 try:
     from dotenv import load_dotenv
 
@@ -56,8 +57,8 @@ try:
     env_locations = [
         HARNESS_DIR / ".env",           # .harness/.env (最高优先级)
         HARNESS_DIR / ".env.example",   # .harness/.env.example
-        PROJECT_ROOT / ".env",          # 项目根目录 .env
-        PROJECT_ROOT / ".env.example"   # 项目根目录 .env.example
+        ENGINE_ROOT / ".env",           # 引擎根目录 .env
+        ENGINE_ROOT / ".env.example"    # 引擎根目录 .env.example
     ]
 
     loaded_count = 0
@@ -79,6 +80,44 @@ except ImportError:
             pass
     print("WARNING: python-dotenv not installed, using default values")
     print("   Install: pip install -r .harness/requirements.txt")
+
+
+# ==========================================
+# 3. PROJECT_ROOT 动态解析 (Workspace Isolation)
+# ==========================================
+
+# PROJECT_ROOT: Agent 读写业务代码的工作目录
+# 通过 TARGET_WORKSPACE 环境变量指向外部项目
+_workspace_raw = os.getenv("TARGET_WORKSPACE", "").strip()
+
+if _workspace_raw:
+    _resolved = Path(_workspace_raw).resolve()
+    if _resolved.exists():
+        PROJECT_ROOT = _resolved
+    else:
+        # 配置了但路径不存在，回退到 sandbox
+        print(f"[Config] WARNING: TARGET_WORKSPACE='{_workspace_raw}' "
+              f"does not exist, falling back to sandbox")
+        PROJECT_ROOT = ENGINE_ROOT / "sandbox"
+else:
+    # 未配置，使用 sandbox 隔离
+    PROJECT_ROOT = ENGINE_ROOT / "sandbox"
+
+# 确保 sandbox 目录存在（无论是默认还是回退）
+if not PROJECT_ROOT.exists():
+    PROJECT_ROOT.mkdir(parents=True, exist_ok=True)
+
+# 引擎内部资产路径 — 始终指向 HARNESS_DIR 内部
+HARNESS_ASSET_DIR = HARNESS_DIR
+
+# 项目配置文件：先在工作区找，找不到回退到引擎根目录
+def _resolve_project_config_path() -> Path:
+    """解析 project-config.json 的位置"""
+    workspace_cfg = PROJECT_ROOT / "project-config.json"
+    if workspace_cfg.exists():
+        return workspace_cfg
+    # 回退到引擎根目录（兼容现有项目）
+    return ENGINE_ROOT / "project-config.json"
 
 
 # ==========================================
@@ -154,8 +193,8 @@ SKIP_PHP_CHECK = _get_bool("SKIP_PHP_CHECK", False)
 # 4. 项目配置 (Project Config)
 # ==========================================
 
-# 项目配置文件路径（与 .harness/ 平级）
-PROJECT_CONFIG_PATH = PROJECT_ROOT / "project-config.json"
+# 项目配置文件路径（先在工作区找，回退到引擎根目录）
+PROJECT_CONFIG_PATH = _resolve_project_config_path()
 
 # 运行时缓存
 _project_config_cache: Optional[dict] = None
