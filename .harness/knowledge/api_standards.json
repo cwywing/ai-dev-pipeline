@@ -1,0 +1,117 @@
+{
+  "version": "1.0.0",
+  "updated_at": "2026-03-18T12:00:00+08:00",
+  "description": "API 全局契约规范 - 适用于 Laravel RESTful API",
+
+  "response_format": {
+    "success": {
+      "description": "成功响应格式",
+      "structure": {
+        "code": 0,
+        "message": "success",
+        "data": {}
+      },
+      "example": {
+        "code": 0,
+        "message": "操作成功",
+        "data": {
+          "id": 1,
+          "name": "示例"
+        }
+      }
+    },
+
+    "error": {
+      "description": "错误响应格式",
+      "structure": {
+        "code": "int > 0",
+        "message": "string",
+        "errors": "optional|array"
+      },
+      "example": {
+        "code": 400,
+        "message": "请求参数错误",
+        "errors": {
+          "name": ["名称不能为空"]
+        }
+      }
+    },
+
+    "pagination": {
+      "description": "分页响应格式",
+      "structure": {
+        "code": 0,
+        "message": "success",
+        "data": {
+          "list": "array",
+          "pagination": {
+            "current_page": "int",
+            "per_page": "int",
+            "total": "int",
+            "last_page": "int",
+            "has_more_pages": "bool"
+          }
+        }
+      },
+      "example": {
+        "code": 0,
+        "message": "success",
+        "data": {
+          "list": [
+            {"id": 1, "name": "项目1"}
+          ],
+          "pagination": {
+            "current_page": 1,
+            "per_page": 15,
+            "total": 100,
+            "last_page": 7,
+            "has_more_pages": true
+          }
+        }
+      }
+    }
+  },
+
+  "status_codes": {
+    "200": "成功",
+    "201": "创建成功",
+    "400": "请求参数错误",
+    "401": "未认证",
+    "403": "无权限访问",
+    "404": "资源不存在",
+    "422": "验证失败",
+    "429": "请求过于频繁",
+    "500": "服务器内部错误"
+  },
+
+  "common_headers": {
+    "request": {
+      "Authorization": "Bearer {token}",
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+      "X-Request-ID": "UUID v4 (optional)"
+    },
+    "response": {
+      "X-Request-ID": "请求追踪ID",
+      "X-RateLimit-Limit": "速率限制上限",
+      "X-RateLimit-Remaining": "剩余请求次数"
+    }
+  },
+
+  "datetime_format": "ISO 8601 (YYYY-MM-DDTHH:mm:ss+08:00)",
+  "price_format": "decimal(10,2) 字符串格式",
+
+  "validation_rules": {
+    "phone": "regex:/^1[3-9]\\d{9}$/",
+    "password": "min:6|max:20",
+    "nickname": "max:50",
+    "remark": "max:500",
+    "amount": "numeric|min:0.01|max:999999.99"
+  },
+
+  "rate_limiting": {
+    "api": "60 requests per minute",
+    "auth": "10 requests per minute",
+    "upload": "20 requests per minute"
+  }
+}

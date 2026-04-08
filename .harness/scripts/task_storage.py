@@ -390,6 +390,72 @@ class TaskStorage:
         return all(stages.get(s, {}).get("completed", False)
                    for s in ["dev", "test", "review"])
 
+    def is_task_fully_completed(self, task_id: str) -> bool:
+        """
+        判断任务是否已满足前置依赖条件。
+
+        标准：dev 和 test 阶段均已完成。
+        如果任务整体已标记 passes=True，也视为已完成。
+
+        Args:
+            task_id: 任务 ID
+
+        Returns:
+            True 表示前置产出已就绪
+        """
+        task = self.load_task(task_id)
+        if not task:
+            app_logger.debug(f"is_task_fully_completed: 任务 {task_id} 不存在")
+            return False
+
+        if task.get("passes", False):
+            return True
+
+        stages = task.get("stages", {})
+        dev_done = stages.get("dev", {}).get("completed", False)
+        test_done = stages.get("test", {}).get("completed", False)
+        return dev_done and test_done
+
+    def get_task_artifacts(self, task_id: str) -> dict:
+        """
+        读取任务的产出记录，提取有助于下游开发的信息。
+
+        优先查找 ARTIFACTS_DIR/{task_id}.json，
+        提取 design_decisions、interface_contracts、constraints、files 等字段。
+
+        Args:
+            task_id: 任务 ID
+
+        Returns:
+            dict: 至少包含空列表的 keys:
+                  design_decisions, interface_contracts, constraints, files
+        """
+        result = {
+            "design_decisions": [],
+            "interface_contracts": [],
+            "constraints": [],
+            "files": [],
+        }
+
+        artifact_file = ARTIFACTS_DIR / f"{task_id}.json"
+        if not artifact_file.exists():
+            return result
+
+        try:
+            data = json.loads(artifact_file.read_text(encoding="utf-8"))
+        except Exception as e:
+            app_logger.debug(f"读取 {task_id} 产出文件失败: {e}")
+            return result
+
+        for key in result:
+            value = data.get(key, [])
+            if isinstance(value, list):
+                result[key] = value
+            elif value:
+                result[key] = [value]
+
+        return result
+
     def complete_task(self, task_id: str) -> bool:
         """标记任务完成并归档"""
         task = self.load_task(task_id)

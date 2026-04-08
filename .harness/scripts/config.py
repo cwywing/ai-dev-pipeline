@@ -151,7 +151,114 @@ SKIP_PHP_CHECK = _get_bool("SKIP_PHP_CHECK", False)
 """跳过 PHP 环境检查"""
 
 # ==========================================
-# 4. 便捷函数
+# 4. 项目配置 (Project Config)
+# ==========================================
+
+# 项目配置文件路径（与 .harness/ 平级）
+PROJECT_CONFIG_PATH = PROJECT_ROOT / "project-config.json"
+
+# 运行时缓存
+_project_config_cache: Optional[dict] = None
+
+
+def get_project_config() -> dict:
+    """
+    加载并返回项目配置。
+
+    读取 PROJECT_ROOT / project-config.json，
+    如果文件不存在则返回空字典。
+
+    首次调用后结果会被缓存，后续调用直接返回缓存。
+    """
+    global _project_config_cache
+
+    if _project_config_cache is not None:
+        return _project_config_cache
+
+    if not PROJECT_CONFIG_PATH.exists():
+        _project_config_cache = {}
+        return _project_config_cache
+
+    try:
+        import json
+        raw = PROJECT_CONFIG_PATH.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        _project_config_cache = data if isinstance(data, dict) else {}
+    except Exception:
+        _project_config_cache = {}
+
+    return _project_config_cache
+
+
+def invalidate_project_config_cache() -> None:
+    """清除项目配置缓存（配置文件被修改后调用）。"""
+    global _project_config_cache
+    _project_config_cache = None
+
+
+def format_project_config_for_prompt(cfg: dict) -> str:
+    """
+    将项目配置转化为 LLM 友好的 Markdown 文本。
+
+    只输出非空字段，过滤掉值为 None / 空字符串 / 空字典的条目，
+    保持 Prompt 简洁。
+
+    Args:
+        cfg: get_project_config() 返回的字典
+
+    Returns:
+        格式化后的 Markdown 文本
+    """
+    if not cfg:
+        return ""
+
+    lines = ["# [PROJECT GLOBAL CONVENTIONS]", ""]
+    has_content = False
+
+    def _section(title: str, data: dict) -> None:
+        nonlocal has_content
+        section_lines = [f"## {title}", ""]
+        for key, value in data.items():
+            if isinstance(value, dict):
+                # 过滤空值子项
+                non_empty = {k: v for k, v in value.items()
+                             if v is not None and v != "" and v != {}}
+                if not non_empty:
+                    continue
+                section_lines.append(f"- **{key}**")
+                for sk, sv in non_empty.items():
+                    if isinstance(sv, dict):
+                        sv_str = ", ".join(f"{k2}: {v2}" for k2, v2 in sv.items())
+                        section_lines.append(f"  - {sk}: {sv_str}")
+                    else:
+                        section_lines.append(f"  - {sk}: {sv}")
+            elif value is not None and value != "":
+                section_lines.append(f"- **{key}**: {value}")
+        if len(section_lines) > 2:
+            lines.extend(section_lines)
+            lines.append("")
+            has_content = True
+
+    # 按优先级输出各区块
+    _section("Project", cfg.get("project", {}))
+    _section("Tech Stack", cfg.get("tech_stack", {}))
+    _section("Naming Conventions", cfg.get("naming_conventions", {}))
+    _section("API Conventions", cfg.get("api_conventions", {}))
+    _section("Database Conventions", cfg.get("database_conventions", {}))
+    _section("Code Style", cfg.get("code_style", {}))
+    _section("Testing", cfg.get("testing", {}))
+    _section("Paths", cfg.get("paths", {}))
+    _section("Commands", cfg.get("commands", {}))
+
+    if not has_content:
+        return ""
+
+    lines.append("(Above conventions MUST be followed. Do NOT violate any of them.)")
+    return "\n".join(lines)
+
+
+# ==========================================
+# 5. 便捷函数
 # ==========================================
 
 def get_timeout_for_stage(stage: str, retry_count: int = 0) -> int:
@@ -243,6 +350,15 @@ def print_config():
 
     print(f"\n✅ 验证配置:")
     print(f"   AUTO_VALIDATION: {ENABLE_AUTO_VALIDATION}")
+
+    print(f"\n  Project Config: {PROJECT_CONFIG_PATH}")
+    cfg = get_project_config()
+    if cfg:
+        name = cfg.get("project", {}).get("name", "")
+        fw = cfg.get("tech_stack", {}).get("framework", "")
+        print(f"   name={name or '(empty)'}, framework={fw or '(empty)'}")
+    else:
+        print("   (not configured)")
 
     print("\n" + "=" * 60 + "\n")
 

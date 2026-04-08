@@ -1,821 +1,467 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+from __future__ import annotations
+
 """
- Satisfaction Validator - Claude Code CLI 模式独立验证脚本
-用于验证 Dev Agent 的实现是否满足任务要求
+Satisfaction Validator - LLM-as-a-Judge 满意度验证
+==================================================
 
-功能：
-- 调用 Claude Code CLI 进行交互式审查
-- 像自动化脚本那样调用 Claude
-- 你可以：
-  a. 直接与 Claude 交互讨论代码
-  b. 最终输入评估结果（JSON 格式）
+替代原有的空壳 validation 阶段，让大模型作为独立裁判
+对 Dev 阶段的产出进行客观打分。
 
-使用示例：
-    python3 .harness/scripts/validate_satisfaction.py --task-id API_Import_001
+核心设计：
+- 只读取 artifacts 中记录的变更文件（Token 优化）
+- 构建严厉审查官 Prompt，逐条对比 AC 与实际代码
+- 复用 DualTimeoutExecutor 执行裁判推理
+- 输出末尾强制包含 <score>整数或一位小数</score>
 
-退出码：
-    0 - 验证通过
-    1 - 验证失败
-    2 - 验证遇到错误
+使用方式:
+    from scripts.validate_satisfaction import SatisfactionValidator
+
+    validator = SatisfactionValidator(task_id)
+    output_text, exit_code = validator.evaluate()
+
+    # output_text 末尾包含 <score>85.5</score>
+    # exit_code 0=成功, 14/124=超时, 其他=错误
+
+==================================================
 """
 
-import argparse
-import json
 import os
 import re
-import shutil
-import subprocess
 import sys
-import tempfile
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Any, Optional
-
-# 添加脚本目录到路径
-SCRIPT_DIR = Path(__file__).parent.resolve()
-HARNESS_DIR = SCRIPT_DIR.parent
-PROJECT_ROOT = HARNESS_DIR.parent
-
-# 导入项目工具
-try:
-    # 添加项目根目录到路径（用于导入 console_output 等模块）
-    sys.path.insert(0, str(PROJECT_ROOT))
-    sys.path.insert(0, str(SCRIPT_DIR))
-
-    from console_output import success, error, warning, info
-    from task_utils import TaskCodec
-    # 尝试导入 TaskFileStorage（单文件模式）
-    try:
-        from task_file_storage import TaskFileStorage
-        _storage_available = True
-    except ImportError:
-        _storage_available = False
-        warning("无法导入 TaskFileStorage，单文件存储功能将不可用", file=sys.stderr)
-except ImportError as e:
-    print(f"[FAIL] 无法导入依赖模块: {e}", file=sys.stderr)
-    print("[INFO] 请确保在 laravel 项目根目录下运行", file=sys.stderr)
-    sys.exit(2)
+from typing import List, Optional, Tuple
 
 
-# ==================== 实现检测模块 ====================
+# 路径注入
+_scripts_dir = Path(__file__).parent.resolve()
+sys.path.insert(0, str(_scripts_dir.parent))    # .harness/
+sys.path.insert(0, str(_scripts_dir))            # .harness/scripts/
 
-class ImplementationDetector:
-    """实现文件检测器"""
+from scripts.config import (
+    PROJECT_ROOT,
+    HARNESS_DIR,
+    CLI_IO_DIR,
+    ARTIFACTS_DIR,
+    BASE_SILENCE_TIMEOUT,
+    MAX_SILENCE_TIMEOUT,
+    TIMEOUT_BACKOFF_FACTOR,
+)
+from scripts.logger import app_logger
+from scripts.task_storage import TaskStorage
+from scripts.dual_timeout import DualTimeoutExecutor
+
+
+# ========================================
+#  代码文件读取器
+# ========================================
+
+# 单文件最大读取行数（防止意外读到巨型日志/二进制）
+_MAX_FILE_LINES = 500
+
+# 上下文窗口中代码部分的最大字符数（约 50KB，保守估算）
+_MAX_CODE_CHARS = 50_000
+
+
+class CodeReader:
+    """
+    精准代码提取器
+
+    只读取 artifacts 中记录的变更文件，
+    不扫描整个项目，避免 Token 浪费。
+    """
 
     def __init__(self, project_root: Path = PROJECT_ROOT):
         self.project_root = project_root
+        self.total_chars = 0
 
-    def detect_from_task(self, task: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """从任务中检测实现文件"""
-        files = []
+    def read_files(self, file_paths: List[str]) -> List[dict]:
+        """
+        读取文件列表，返回结构化的文件内容。
 
-        if 'files' in task:
-            for file_path in task['files']:
-                file_info = self._analyze_file(file_path)
-                if file_info:
-                    files.append(file_info)
-            return files
+        每个元素:
+        {
+            "path": str,
+            "exists": bool,
+            "lines": int,
+            "content": str,          # 截断后的内容
+            "truncated": bool,
+        }
+        """
+        results = []
+        for fpath in file_paths:
+            info = self._read_single(fpath)
+            results.append(info)
+        return results
 
-        files.extend(self._infer_files_from_acceptance(task.get('acceptance', [])))
-        files.extend(self._infer_files_from_description(task.get('description', '')))
-
-        return files
-
-    def _analyze_file(self, file_path: str) -> Optional[Dict[str, Any]]:
-        """分析单个文件"""
-        full_path = self.project_root / file_path
-
-        if not full_path.exists():
-            return None
-
-        file_type = self._classify_file(file_path)
-
-        try:
-            with open(full_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-
-            return {
-                "path": file_path,
-                "type": file_type,
-                "content_summary": self._summarize_content(file_type, content)
-            }
-        except Exception as e:
-            return {
-                "path": file_path,
-                "type": file_type,
-                "error": str(e)
-            }
-
-    def _classify_file(self, file_path: str) -> str:
-        """分类文件类型"""
-        path = Path(file_path)
-
-        if 'Controller' in path.name:
-            return 'controller'
-        elif 'Request' in path.name:
-            return 'form_request'
-        elif 'Resource' in path.name:
-            return 'resource'
-        elif 'Model' in path.name:
-            return 'model'
-        elif 'Test.php' in path.name or 'Test.php' in str(path):
-            return 'test'
-        elif 'migration' in str(path).lower():
-            return 'migration'
-        elif 'routes' in str(path).lower() or path.name == 'api.php':
-            return 'route'
-        elif 'Service' in path.name:
-            return 'service'
-        else:
-            return 'other'
-
-    def _summarize_content(self, file_type: str, content: str) -> str:
-        """摘要文件内容"""
-        lines = content.strip().split('\n')[:20]
-        summary = '\n'.join(lines)
-
-        if len(content) > 1000:
-            summary = summary + f"\n... (共 {len(content)} 字符，显示前 1000 字符)"
-
-        return summary
-
-    def _infer_files_from_acceptance(self, acceptance: List[str]) -> List[Dict[str, Any]]:
-        """从验收标准中推断实现文件"""
-        files = []
-        patterns = {
-            'Controller': r'(?:app/Http/Controllers/Api/(?:App|Admin)/[^ ]+Controller\.php)',
-            'Request': r'(?:app/Http/Requests/(?:App|Admin)/[^ ]+Request\.php)',
-            'Resource': r'(?:app/Http/Resources/(?:App|Admin)/[^ ]+Resource\.php)',
-            'Model': r'(?:app/Models/[^ ]+\.php)',
-            'Test': r'(?:tests/(?:Feature|Unit)/[^ ]+Test\.php)',
-            'Migration': r'(?:database/migrations/[^ ]+\.php)',
-            'Route': r'(?:routes/api\.php)',
-            'Service': r'(?:app/Services/[^ ]+Service\.php)',
+    def _read_single(self, fpath: str) -> dict:
+        """读取单个文件"""
+        full_path = self.project_root / fpath
+        result = {
+            "path": fpath,
+            "exists": False,
+            "lines": 0,
+            "content": "",
+            "truncated": False,
         }
 
-        for criterion in acceptance:
-            for file_type, pattern in patterns.items():
-                matches = re.findall(pattern, criterion)
-                for match in matches:
-                    files.append({
-                        "path": match,
-                        "type": file_type.lower(),
-                        "description": f"从验收标准推断: {criterion}"
-                    })
+        if not full_path.exists():
+            return result
 
-        seen_paths = set()
-        unique_files = []
-        for file in files:
-            if file['path'] not in seen_paths:
-                seen_paths.add(file['path'])
-                unique_files.append(file)
+        # 跳过二进制和超大文件
+        try:
+            stat = full_path.stat()
+            if stat.st_size > 500_000:  # 500KB
+                result["content"] = f"[File too large: {stat.st_size} bytes, skipped]"
+                return result
+        except OSError:
+            return result
 
-        return unique_files
+        try:
+            text = full_path.read_text(encoding="utf-8", errors="replace")
+        except Exception as e:
+            result["content"] = f"[Read error: {e}]"
+            return result
 
-    def _infer_files_from_description(self, description: str) -> List[Dict[str, Any]]:
-        """从任务描述中推断实现文件"""
-        files = []
-        controller_pattern = r'(?:api/v1/.*?/|\s)(\w+?)Controller'
-        matches = re.findall(controller_pattern, description)
-        for match in matches:
-            files.append({
-                "path": f"app/Http/Controllers/Api/Admin/{match}Controller.php",
-                "type": "controller",
-                "description": f"从描述推断: {description}"
-            })
-        return files
+        result["exists"] = True
+        lines = text.split("\n")
+        result["lines"] = len(lines)
 
+        # 行数截断
+        if len(lines) > _MAX_FILE_LINES:
+            lines = lines[:_MAX_FILE_LINES]
+            result["truncated"] = True
+            text = "\n".join(lines) + f"\n... (truncated at {_MAX_FILE_LINES} lines)"
 
-# ==================== 输出格式化模块 ====================
+        # 总字符数截断
+        if self.total_chars + len(text) > _MAX_CODE_CHARS:
+            remaining = _MAX_CODE_CHARS - self.total_chars
+            if remaining > 200:
+                text = text[:remaining] + "\n... (code budget exhausted)"
+                result["truncated"] = True
+            else:
+                text = "[Code budget exhausted, skipped]"
+                result["truncated"] = True
 
-class OutputFormatter:
-    """输出格式化器"""
-
-    @staticmethod
-    def format_markdown(result: Dict[str, Any], task_id: str, task_desc: str) -> str:
-        """格式化为 Markdown"""
-        lines = []
-
-        status = result.get('overall_assessment', '未知')
-        status_text = OutputFormatter._get_status_text(status)
-
-        lines.append(f"# 验证结果: {status_text} {status}")
-        lines.append("")
-        lines.append(f"**任务 ID**: {task_id}")
-        lines.append(f"**任务描述**: {task_desc}")
-        lines.append(f"**评估时间**: {OutputFormatter._get_timestamp()}")
-        lines.append("")
-
-        score = result.get('satisfaction_score', 0)
-        lines.append(f"## 满意度评分: {score}/100")
-        lines.append("")
-
-        coverage = result.get('acceptance_coverage', {})
-        lines.append("## 验收标准覆盖")
-        lines.append("")
-
-        passed = coverage.get('passed', [])
-        failed = coverage.get('failed', [])
-        partial = coverage.get('partial', [])
-
-        if passed:
-            lines.append(f"### [OK] 通过 ({len(passed)})")
-            for idx in passed:
-                try:
-                    idx_int = int(idx)
-                    lines.append(f"- 验收标准 #{idx_int + 1}")
-                except (ValueError, TypeError):
-                    lines.append(f"- 验收标准 #{idx}")
-        if partial:
-            lines.append(f"### [WARN] 部分通过 ({len(partial)})")
-            for idx in partial:
-                try:
-                    idx_int = int(idx)
-                    lines.append(f"- 验收标准 #{idx_int + 1}")
-                except (ValueError, TypeError):
-                    lines.append(f"- 验收标准 #{idx}")
-        if failed:
-            lines.append(f"### [FAIL] 未通过 ({len(failed)})")
-            for idx in failed:
-                try:
-                    idx_int = int(idx)
-                    lines.append(f"- 验收标准 #{idx_int + 1}")
-                except (ValueError, TypeError):
-                    lines.append(f"- 验收标准 #{idx}")
-        if not passed and not partial and not failed:
-            lines.append("### 无验收标准或无法匹配")
-        lines.append("")
-
-        code_quality = result.get('code_quality', {})
-        lines.append("## 代码质量检查")
-        lines.append("")
-        lines.append("| 检查项 | 状态 |")
-        lines.append("|--------|------|")
-        lines.append(f"| 遵循约定 | {'[OK]' if code_quality.get('follows_conventions', False) else '[FAIL]'} |")
-        lines.append(f"| 使用 Resources | {'[OK]' if code_quality.get('uses_resources', False) else '[FAIL]'} |")
-        lines.append(f"| 使用 Requests | {'[OK]' if code_quality.get('uses_requests', False) else '[FAIL]'} |")
-        lines.append(f"| 有测试 | {'[OK]' if code_quality.get('has_tests', False) else '[FAIL]'} |")
-        lines.append("")
-
-        issues = result.get('issues', [])
-        if issues:
-            lines.append("## 发现的问题")
-            lines.append("")
-            for i, issue in enumerate(issues, 1):
-                lines.append(f"{i}. {issue}")
-            lines.append("")
-
-        recommendations = result.get('recommendations', [])
-        if recommendations:
-            lines.append("## 改进建议")
-            lines.append("")
-            for i, rec in enumerate(recommendations, 1):
-                lines.append(f"{i}. {rec}")
-            lines.append("")
-
-        reasoning = result.get('reasoning', '')
-        if reasoning:
-            lines.append("## 详细推理")
-            lines.append("")
-            lines.append("```")
-            lines.append(reasoning)
-            lines.append("```")
-            lines.append("")
-
-        return '\n'.join(lines)
-
-    @staticmethod
-    def _get_status_text(status: str) -> str:
-        """获取状态对应的文本"""
-        status_lower = status.lower()
-        # 检查"不通过"或"fail"在前
-        if '不通过' in status or 'fail' in status_lower:
-            return '[FAIL]'
-        elif '部分' in status or 'partial' in status_lower:
-            return '[WARN]'
-        elif '通过' in status or 'pass' in status_lower:
-            return '[OK]'
-        else:
-            return '[UNKNOWN]'
-
-    @staticmethod
-    def _get_timestamp() -> str:
-        """获取当前时间戳"""
-        from datetime import datetime
-        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.total_chars += len(text)
+        result["content"] = text
+        return result
 
 
-# ==================== 主流程 ====================
+# ========================================
+#  SatisfactionValidator
+# ========================================
 
 class SatisfactionValidator:
-    """满意度验证器主类"""
+    """
+    LLM 裁判 - 满意度验证器
+
+    流程:
+    1. 从 TaskStorage 读取任务描述和验收标准
+    2. 从 artifacts 读取变更文件列表
+    3. 用 CodeReader 精准提取变更文件内容
+    4. 组装严厉审查官 Prompt
+    5. 复用 DualTimeoutExecutor 执行裁判
+    6. 返回包含 <score> 的裁判文本
+    """
 
     def __init__(self, task_id: str):
         self.task_id = task_id
-        self.task_codec = TaskCodec
-        self.implementation_detector = ImplementationDetector()
-        self.task = None
-        self.result = None
-        self.validation_config = {}
+        self.storage = TaskStorage()
+        self.reader = CodeReader()
 
-    def load_task(self) -> bool:
-        """加载任务数据"""
-        try:
-            if _storage_available:
-                storage = TaskFileStorage()
-                self.task = storage.load_task(self.task_id)
-                if self.task:
-                    info(f"已加载任务 (单文件模式): {self.task_id}")
-                    # 读取 validation 配置
-                    self.validation_config = self.task.get('validation', {})
-                    info(f"验证配置: enabled={self.validation_config.get('enabled', False)}, threshold={self.validation_config.get('threshold', 0.8)}")
-                    return True
-                warning(f"单文件模式未找到任务 {self.task_id}，尝试旧模式...")
+    def evaluate(self) -> Tuple[str, int]:
+        """
+        执行满意度验证
 
-            index_path = HARNESS_DIR / 'task-index.json'
-            if not index_path.exists():
-                error(f"任务索引文件不存在: {index_path}")
-                return False
+        Returns:
+            (output_text, exit_code)
+            output_text: 裁判输出的完整文本（末尾含 <score>）
+            exit_code: 0=成功, 14=活性超时, 124=硬超时, 1=启动失败
+        """
+        app_logger.info(f"[Validator] 开始评估任务 {self.task_id}")
 
-            with open(index_path, 'r', encoding='utf-8') as f:
-                index = json.load(f)
+        # 1. 加载任务信息
+        task = self.storage.load_task(self.task_id)
+        if not task:
+            msg = f"[Validator] 任务 {self.task_id} 不存在"
+            app_logger.error(msg)
+            return msg, 1
 
-            task_info = index.get('index', {}).get(self.task_id)
-            if not task_info:
-                error(f"未找到任务 {self.task_id}")
-                return False
+        description = task.get("description", "")
+        acceptance = task.get("acceptance", [])
 
-            self.task = self.task_codec.load_tasks(str(index_path))
+        if not acceptance:
+            msg = f"[Validator] 任务 {self.task_id} 无验收标准，无法评估"
+            app_logger.warning(msg)
+            return msg + "\n<score>0</score>", 0
 
-            found = False
-            for t in self.task.get('tasks', []):
-                task_id = t.get('i') or t.get('id')
-                if task_id == self.task_id:
-                    self.task = t
-                    found = True
-                    break
+        # 2. 读取变更文件
+        artifacts = self.storage.get_task_artifacts(self.task_id)
+        file_paths = artifacts.get("files", [])
 
-            if not found:
-                error(f"未在任务列表中找到 {self.task_id}")
-                return False
+        app_logger.info(
+            f"[Validator] {self.task_id}: "
+            f"acceptance={len(acceptance)}条, files={len(file_paths)}个"
+        )
 
-            info(f"已加载任务: {self.task_id}")
-            # 读取 validation 配置
-            self.validation_config = self.task.get('validation', {})
-            info(f"验证配置: enabled={self.validation_config.get('enabled', False)}, threshold={self.validation_config.get('threshold', 0.8)}")
-            return True
+        code_sections = self.reader.read_files(file_paths)
+        existing_files = [s for s in code_sections if s["exists"]]
 
-        except Exception as e:
-            error(f"加载任务失败: {e}")
-            return False
+        if not existing_files:
+            msg = (
+                f"[Validator] 任务 {self.task_id} 的变更文件均不存在于磁盘。"
+                f"声明路径: {file_paths}"
+            )
+            app_logger.warning(msg)
+            return msg + "\n<score>0</score>", 0
 
-    def validate(self) -> bool:
-        """执行验证"""
-        if not self.task:
-            error("任务未加载，请先调用 load_task()")
-            return False
+        app_logger.info(
+            f"[Validator] 读取 {len(existing_files)}/{len(file_paths)} 个文件, "
+            f"代码总量 {self.reader.total_chars // 1024}KB"
+        )
 
-        try:
-            description = self.task.get('d') or self.task.get('description', '')
-            acceptance_raw = self.task.get('a') or self.task.get('acceptance', [])
-            acceptance = [acc if isinstance(acc, str) else str(acc) for acc in acceptance_raw]
+        # 3. 组装 Judge Prompt
+        prompt = self._build_judge_prompt(description, acceptance, existing_files)
+        prompt_size = len(prompt.encode("utf-8"))
+        app_logger.info(f"[Validator] Judge Prompt 组装完成: {prompt_size // 1024}KB")
 
-            scenarios = self.task.get('scenarios', [])
-            implementation_files = self.implementation_detector.detect_from_task(self.task)
+        # 4. 执行裁判
+        output_text = self._execute_judge(prompt, prompt_size)
 
-            prompt = self._build_prompt(description, acceptance, scenarios, implementation_files)
+        return output_text, 0
 
-            self.description = description
-            self.acceptance = acceptance
-            self.prompt = prompt
+    def _build_judge_prompt(self, description: str,
+                            acceptance: List[str],
+                            code_sections: List[dict]) -> str:
+        """
+        组装严厉审查官 Prompt
 
-            # 调用 Claude CLI
-            info(f"正在调用 Claude Code CLI 进行评估...")
+        结构:
+        1. 角色定义与审查指令
+        2. 任务目标与验收标准
+        3. 实际修改的文件与代码
+        4. 评分指令（强制 <score> 格式）
+        """
+        # 验收标准
+        ac_text = "\n".join(f"  {i + 1}. {ac}" for i, ac in enumerate(acceptance))
 
-            # 从 task 中提取 files 信息
-            if 'files' in self.task:
-                info(f"检测到 {len(self.task['files'])} 个实现文件")
+        # 代码文件
+        code_text_parts = []
+        for section in code_sections:
+            header = f"### {section['path']}"
+            meta = f"({section['lines']} lines"
+            if section["truncated"]:
+                meta += ", truncated"
+            meta += ")"
+            code_text_parts.append(f"{header} {meta}\n\n```\n{section['content']}\n```")
 
-            return True
+        code_text = "\n\n".join(code_text_parts)
 
-        except Exception as e:
-            self.result = {
-                "success": False,
-                "error": str(e),
-                "reasoning": f"验证过程发生错误: {e}"
-            }
-            return False
+        prompt = f"""You are a strict and impartial code quality auditor. Your job is to verify whether the implementation below satisfies EVERY acceptance criterion.
 
-    def _build_prompt(self, description: str, acceptance: List[str],
-                      scenarios: Optional[List[Dict[str, Any]]],
-                      implementation_files: List[Dict[str, Any]]) -> str:
-        """构建判断提示词"""
-        files_info = ""
-        for file in implementation_files:
-            files_info += f"\n### {file.get('path', 'Unknown')}\n"
-            if file.get('type'):
-                files_info += f"类型: {file['type']}\n"
-            if file.get('content_summary'):
-                files_info += f"内容摘要: {file['content_summary'][:500]}\n"
+## Task Description
 
-        scenarios_info = ""
-        if scenarios:
-            scenarios_info = "\n\n## 场景要求\n"
-            for i, scenario in enumerate(scenarios, 1):
-                scenarios_info += f"\n### 场景 {i}: {scenario.get('name', f'Scenario {i}')}\n"
-                if 'description' in scenario:
-                    scenarios_info += f"描述: {scenario['description']}\n"
-                if 'steps' in scenario:
-                    scenarios_info += f"步骤:\n"
-                    for step in scenario['steps']:
-                        scenarios_info += f"- {step}\n"
-                if 'expected' in scenario:
-                    scenarios_info += f"预期结果: {scenario['expected']}\n"
-
-        acceptance_formatted = "\n".join(f"- {item}" for item in acceptance)
-
-        prompt = f"""你是一位专业的 Laravel 后端架构师审核员。请独立评估 Dev Agent 的实现是否满足任务要求。
-
-## 任务描述
 {description}
 
-## 验收标准
-{acceptance_formatted}
+## Acceptance Criteria (MUST verify each one)
 
-## 实现文件
-{files_info}
+{ac_text}
 
-{scenarios_info}
+## Implementation Files
 
-## 评估要求
+{code_text}
 
-请基于以下维度进行评估：
+## Your Task
 
-1. **功能完整性**: 所有验收标准是否全部实现
-2. **代码质量**: 代码是否符合 Laravel 最佳实践
-3. **测试覆盖**: 是否有适当的测试覆盖
-4. **架构合理性**: 模型、控制器、Request、Resource 的组织是否合理
+1. For EACH acceptance criterion above, check the implementation files:
+   - Does the code fully satisfy this criterion? (YES / PARTIAL / NO)
+   - If NO or PARTIAL, explain exactly what is missing or wrong.
 
-## 你的任务
+2. Pay special attention to:
+   - Missing files that are referenced in the acceptance criteria
+   - Incorrect logic or obvious bugs
+   - Missing error handling
+   - Violation of the task description requirements
 
-1. 首先，阅读任务描述和验收标准，理解原始意图
-2. 然后，阅读实现文件，分析代码是否真的满足了原始意图
-3. 最后，给出你的独立评估
+3. Write your audit report in this format:
 
-## 输出格式
+### Audit Report
 
-请以 JSON 格式输出评估结果，必须包含以下字段：
+**Criterion 1: [first criterion text]**
+- Status: YES / PARTIAL / NO
+- Evidence: (quote relevant code or explain what is missing)
 
-```json
-{{
-    "overall_assessment": "通过/部分通过/不通过",
-    "satisfaction_score": 0-100的整数,
-    "acceptance_coverage": {{
-        "passed": ["匹配的验收标准索引列表"],
-        "failed": ["未满足的验收标准索引列表"],
-        "partial": ["部分满足的验收标准索引列表"]
-    }},
-    "code_quality": {{
-        "follows_conventions": true/false,
-        "uses_resources": true/false,
-        "uses_requests": true/false,
-        "has_tests": true/false
-    }},
-    "issues": ["发现的问题列表"],
-    "recommendations": ["改进建议列表"],
-    "reasoning": "详细推理说明"
-}}
-```
+**Criterion 2: [second criterion text]**
+- Status: YES / PARTIAL / NO
+- Evidence: ...
 
-## 重要提示
+...
 
-- 这是一个独立的评估环节，你不应该修改任何代码
-- 请基于原始任务意图来判断实现是否真正满足需求
-- 只输出 JSON，不要输出额外的 Markdown 格式
-"""
+### Summary
+- Total criteria: {len(acceptance)}
+- Passed: (count)
+- Partial: (count)
+- Failed: (count)
+
+### Verdict
+(Brief explanation of your overall assessment)
+
+## Scoring
+
+Based on your audit, assign a satisfaction score:
+- 90-100: All criteria met, code quality is excellent
+- 80-89: All criteria met with minor issues
+- 60-79: Most criteria met but has notable gaps
+- 40-59: Significant issues or missing features
+- 0-39: Major failures, implementation is fundamentally broken
+
+You MUST output the score as the VERY LAST LINE in this exact format (nothing after it):
+
+<score>YOUR_SCORE</score>
+
+Where YOUR_SCORE is an integer or one decimal place number between 0 and 100."""
+
         return prompt
 
-    def get_exit_code(self) -> int:
-        """获取退出码"""
-        if not self.result:
-            return 2
+    def _execute_judge(self, prompt: str, prompt_size: int) -> str:
+        """
+        执行裁判推理
 
-        # 检查是否有解析错误
-        if self.result.get('success') == False:
-            # 如果是 JSON 解析失败，返回 2
-            if '无法解析 JSON 输出' in str(self.result.get('error', '')) or 'JSON 解析失败' in str(self.result.get('error', '')):
-                return 2
-            # 其他情况（如评估结果为不通过）返回 1
-            return 1
+        复用 DualTimeoutExecutor，将输出重定向到临时文件。
+        """
+        from scripts.config import CLAUDE_CMD, PERMISSION_MODE
 
-        assessment = self.result.get('overall_assessment', '').lower()
-        # 检查"不通过"在前
-        if '不通过' in self.result.get('overall_assessment', '') or 'fail' in assessment:
-            return 1
-        elif '通过' in self.result.get('overall_assessment', '') or 'pass' in assessment:
-            return 0
-        else:
-            return 2
+        # 计算超时：validation 阶段用 1.5x 基准
+        base = int(BASE_SILENCE_TIMEOUT * 1.5)
+        size_bonus = int(prompt_size / 1024 * 1.0)
+        hard = min(base + size_bonus, MAX_SILENCE_TIMEOUT)
+        silence = max(int(hard * 0.6), 30)
+        silence = min(silence, hard - 5)
+
+        app_logger.info(
+            f"[Validator] 执行裁判: hard={hard}s, silence={silence}s"
+        )
+
+        cmd = [
+            CLAUDE_CMD,
+            "--print",
+            "--permission-mode", PERMISSION_MODE,
+        ]
+
+        # 创建输出文件
+        session_id = f"val_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{os.getpid()}"
+        output_file = CLI_IO_DIR / "sessions" / f"{session_id}_output.txt"
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+
+        # 写入会话元数据
+        import json as _json
+        meta_file = CLI_IO_DIR / "current.json"
+        meta_file.write_text(
+            _json.dumps({
+                "session_id": session_id,
+                "task_id": self.task_id,
+                "stage": "validation",
+                "start_time": datetime.now().isoformat(),
+                "active": True,
+                "prompt_size": prompt_size,
+                "validator": True,
+            }, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        # DualTimeoutExecutor 执行
+        executor = DualTimeoutExecutor(
+            hard_timeout=hard,
+            silence_timeout=silence,
+        )
+
+        exit_code = executor.execute(cmd, prompt)
+
+        # 更新元数据
+        meta_file.write_text(
+            _json.dumps({
+                "session_id": session_id,
+                "task_id": self.task_id,
+                "stage": "validation",
+                "end_time": datetime.now().isoformat(),
+                "exit_code": exit_code,
+                "active": False,
+                "validator": True,
+            }, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        is_timeout = exit_code in (14, 124)
+        if is_timeout:
+            label = "silence" if exit_code == 14 else "hard"
+            app_logger.warning(f"[Validator] 裁判超时 ({label})")
+            return f"[Validation timeout ({label}), {hard}s exceeded]\n<score>0</score>"
+
+        if exit_code != 0:
+            app_logger.warning(f"[Validator] 裁判异常退出: code={exit_code}")
+            return f"[Validation error: exit code {exit_code}]\n<score>0</score>"
+
+        # 读取输出文件
+        if not output_file.exists():
+            app_logger.warning("[Validator] 输出文件未生成")
+            return "[Validation output file missing]\n<score>0</score>"
+
+        output_text = output_file.read_text(encoding="utf-8", errors="replace")
+        output_lines = output_text.strip().split("\n")
+
+        # 检查 <score> 是否存在，缺失则追加默认分
+        has_score = any(
+            re.search(r"<score>\s*\d+(?:\.\d)?\s*</score>", line)
+            for line in output_lines[-5:]  # 只检查最后 5 行
+        )
+        if not has_score:
+            app_logger.warning("[Validator] 输出中缺少 <score> 标签，追加默认分 0")
+            output_text += "\n<score>0</score>"
+
+        app_logger.info(
+            f"[Validator] 裁判完成: "
+            f"output={len(output_text) // 1024}KB, exit={exit_code}"
+        )
+
+        return output_text
 
 
-# ==================== 命令行入口 ====================
+# ========================================
+#  独立运行入口（手动验证用）
+# ========================================
 
 def main():
-    """主函数"""
+    """命令行入口 - 手动对指定任务执行满意度验证"""
+    import argparse
+
     parser = argparse.ArgumentParser(
-        description='LLM-as-a-judge满意度验证工具 (Claude Code CLI 模式)',
+        description="LLM-as-a-Judge 满意度验证",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-使用示例:
-    python3 .harness/scripts/validate_satisfaction.py --task-id API_Import_001
-
-提示:
-    1. 脚本会加载任务信息并调用 Claude Code CLI
-    2. 你可以与 Claude 交互讨论代码
-    3. Claude 会输出 JSON 格式的评估结果
-    4. 请确保 Claude 的输出以 JSON 代码块结尾
-
-退出码:
-    0 - 验证通过
-    1 - 验证失败
-    2 - 验证错误
-        """
+示例:
+    python .harness/scripts/validate_satisfaction.py --task-id Model_001
+    python .harness/scripts/validate_satisfaction.py --task-id API_Import_001 --verbose
+        """,
     )
-
-    parser.add_argument(
-        '--task-id',
-        required=True,
-        help='任务 ID (例如: API_Import_001)'
-    )
-    # 新增：支持手动提供评分（用于同步验证结果）
-    parser.add_argument('--score', type=float, help='满意度评分（0.0-1.0，用于手动标记验证结果）')
-    parser.add_argument('--tries', type=int, help='验证尝试次数（用于手动标记验证结果）')
+    parser.add_argument("--task-id", required=True, help="任务 ID")
+    parser.add_argument("-v", "--verbose", action="store_true", help="详细输出")
 
     args = parser.parse_args()
 
-    # 新增：支持手动提供评分（用于同步验证结果）
-    manual_score = getattr(args, 'score', None)
-    manual_tries = getattr(args, 'tries', 0)
+    validator = SatisfactionValidator(args.task_id)
+    output_text, exit_code = validator.evaluate()
 
-    if not args.task_id:
-        error("需要提供 --task-id 参数")
-        sys.exit(2)
+    print("\n" + "=" * 60)
+    print(f"Validation Result: {args.task_id}")
+    print("=" * 60)
+    print(output_text)
+    print("=" * 60)
 
-    validator = SatisfactionValidator(task_id=args.task_id)
-
-    if not validator.load_task():
-        sys.exit(2)
-
-    if not validator.validate():
-        error("验证过程失败")
-        sys.exit(2)
-
-    # 打印提示信息
-    print("\n" + "="*70)
-    print("正在调用 Claude Code CLI 进行评估...")
-    print("="*70)
-    print("\n提示：")
-    print("1. Claude CLI 将启动并读取任务信息")
-    print("2. 你可以与 Claude 交互讨论代码实现")
-    print("3. Claude 应该输出 JSON 格式的评估结果（在代码块中）")
-    print("="*70 + "\n")
-
-    # 修复 Windows 终端编码问题
-    try:
-        if sys.platform == 'win32':
-            import io
-            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
-    except:
-        pass
-
-    # 构建完整 prompt（包含任务信息和评估指令）
-    full_prompt = f"""{validator.prompt}
-
---------
-请基于以上任务信息进行评估，并以 JSON 格式输出结果。
-
---------
-评估结果:"""
-
-    # 调用 Claude Code CLI（使用与自动化脚本相同的方式）
-    # 通过管道传递 prompt
-    try:
-        import platform
-        system = platform.system()
-
-        # Claude Code CLI 可执行文件路径
-        claude_exe = 'claude'
-        if system == 'Windows':
-            # Windows 上尝试使用完整路径
-            import shutil
-            claude_exe = shutil.which('claude') or 'claude'
-
-        # 保存 prompt 到临时文件
-        prompt_fd, prompt_file = tempfile.mkstemp(suffix='.txt', text=True)
-        try:
-            os.close(prompt_fd)
-            with open(prompt_file, 'w', encoding='utf-8') as f:
-                f.write(full_prompt)
-
-            # 读取 prompt 并通过管道传递给 claude
-            with open(prompt_file, 'r', encoding='utf-8') as f:
-                prompt_content = f.read()
-
-            # 调用 claude，通过 stdin 传递 prompt
-            if system == 'Windows':
-                # Windows: 使用 cmd /c 调用以正确处理 .cmd 文件
-                # 设置 shell=True 以使用 PATH 查找
-                process = subprocess.Popen(
-                    [claude_exe, '--permission-mode', 'bypassPermissions'],
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    encoding='utf-8',
-                    shell=True  # Windows 特定：允许查找 .cmd 文件
-                )
-                stdout, _ = process.communicate(input=prompt_content)
-            else:
-                process = subprocess.Popen(
-                    [claude_exe, '--permission-mode', 'bypassPermissions'],
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    encoding='utf-8'
-                )
-                stdout, _ = process.communicate(input=prompt_content)
-
-            # 处理 Claude 输出的编码问题（Windows 下可能是 UTF-8）
-            try:
-                if isinstance(stdout, bytes):
-                    stdout_str = stdout.decode('utf-8', errors='replace')
-                else:
-                    stdout_str = stdout
-                print(stdout_str)
-            except Exception:
-                # 如果输出有问题，只显示基本信息
-                print("[Claude 输出已接收，但无法显示]")
-
-            # 解析 Claude 的输出
-            result = _parse_claude_output(stdout)
-            result['task_id'] = validator.task_id
-            result['description'] = validator.description
-            result['acceptance'] = validator.acceptance
-            validator.result = result
-
-            # 输出结果
-            output_content = OutputFormatter.format_markdown(
-                result,
-                validator.task_id,
-                validator.description
-            )
-            print("\n" + "="*70)
-            print("评估结果")
-            print("="*70)
-            print(output_content)
-
-            # 使用 print 替代 info 以避免编码问题
-            print(f"验证完成")
-            print(f"评估结果: {result.get('overall_assessment', '未知')}")
-            print(f"满意度评分: {result.get('satisfaction_score', 0)}/100")
-
-            # 写入验证结果到任务
-            satisfaction_score = result.get('satisfaction_score', 0)
-            # 转换为 0.0-1.0 范围（如果原始是 0-100）
-            if satisfaction_score > 1.0:
-                satisfaction_score = satisfaction_score / 100.0
-
-            # 如果手动提供了 tries，使用手动值；否则使用 0（第一次尝试）
-            tries = manual_tries if manual_tries > 0 else 0
-
-            # 调用 harness-tools.py 写入结果
-            _write_result_to_task(validator.task_id, satisfaction_score, tries)
-
-        finally:
-            try:
-                if prompt_file and os.path.exists(prompt_file):
-                    os.remove(prompt_file)
-            except:
-                pass
-
-    except FileNotFoundError:
-        error("Claude CLI 未找到，请确保已安装并添加到 PATH")
-        sys.exit(2)
-    except Exception as e:
-        error(f"Claude CLI 调用失败: {e}")
-        sys.exit(2)
-
-    sys.exit(validator.get_exit_code())
+    sys.exit(exit_code)
 
 
-def _write_result_to_task(task_id: str, score: float, tries: int) -> bool:
-    """
-    将验证结果写入任务（调用 harness-tools.py 标记 validation 完成）
-
-    Args:
-        task_id: 任务 ID
-        score: 满意度评分 (0.0-1.0)
-        tries: 尝试次数
-
-    Returns:
-        bool: 是否成功
-    """
-    try:
-        import subprocess
-        # 使用 harness-tools.py 的 mark-validation 动作
-        result = subprocess.run(
-            [
-                'python3', '.harness/scripts/harness-tools.py',
-                '--action', 'mark-validation',
-                '--id', task_id,
-                '--score', str(score),
-                '--tries', str(tries)
-            ],
-            capture_output=True,
-            text=True,
-            encoding='utf-8',
-            errors='replace'
-        )
-        if result.returncode == 0:
-            info(f"验证结果已写入任务 {task_id} (score: {score}, tries: {tries})")
-            return True
-        else:
-            warning(f"写入验证结果失败: {result.stderr}")
-            return False
-    except Exception as e:
-        warning(f"写入验证结果异常: {e}")
-        return False
-
-
-def _parse_claude_output(output: str) -> Dict[str, Any]:
-    """解析 Claude 输出的 JSON 结果"""
-    try:
-        # 尝试查找 JSON 代码块
-        import re
-        match = re.search(r'```json\s*(.*?)\s*```', output, re.DOTALL)
-        if match:
-            return json.loads(match.group(1))
-
-        # 尝试查找任意代码块
-        match = re.search(r'```\s*(.*?)\s*```', output, re.DOTALL)
-        if match:
-            return json.loads(match.group(1))
-
-        # 尝试直接解析整个输出
-        if output.strip().startswith('{'):
-            return json.loads(output)
-
-        # 查找 JSON-like 内容
-        json_start = output.find('{')
-        json_end = output.rfind('}')
-        if json_start >= 0 and json_end > json_start:
-            json_str = output[json_start:json_end+1]
-            return json.loads(json_str)
-
-        return {
-            "success": False,
-            "error": "无法解析 JSON 输出",
-            "raw_output": output,
-            "reasoning": "Claude 的输出无法解析为有效的 JSON 格式"
-        }
-    except json.JSONDecodeError as e:
-        error_msg = str(e)
-        return {
-            "success": False,
-            "error": "JSON 解析失败: " + error_msg,
-            "raw_output": output,
-            "reasoning": "无法解析 LLM 响应为有效的 JSON 格式"
-        }
-    except TypeError as e:
-        # 处理类型错误（如字符串和整数拼接）
-        error_msg = str(e)
-        return {
-            "success": False,
-            "error": "类型错误: " + error_msg,
-            "raw_output": output,
-            "reasoning": "解析过程中发生类型错误: " + error_msg
-        }
-    except Exception as e:
-        # 捕获其他所有异常，避免程序崩溃
-        error_msg = str(e)
-        return {
-            "success": False,
-            "error": "解析异常: " + error_msg,
-            "raw_output": output,
-            "reasoning": "解析过程中发生未知错误: " + error_msg
-        }
-
-
-if __name__ == '__main__':
-    try:
-        main()
-    except KeyboardInterrupt:
-        error("用户中断，退出程序")
-        sys.exit(0)
-    except Exception as e:
-        error(f"程序异常: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+if __name__ == "__main__":
+    main()

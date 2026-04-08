@@ -1,0 +1,119 @@
+{
+  "version": "1.0.0",
+  "updated_at": null,
+  "project": {
+    "name": "",
+    "description": "",
+    "framework": "",
+    "framework_version": ""
+  },
+  "tech_stack": {
+    "language": "",
+    "framework": "",
+    "database": "",
+    "cache": "",
+    "queue": "",
+    "testing": ""
+  },
+  "naming_conventions": {
+    "controllers": {
+      "directory": "",
+      "suffix": "",
+      "namespace_pattern": "",
+      "example": ""
+    },
+    "services": {
+      "directory": "",
+      "suffix": "",
+      "namespace_pattern": "",
+      "example": ""
+    },
+    "repositories": {
+      "directory": "",
+      "suffix": "",
+      "namespace_pattern": "",
+      "example": ""
+    },
+    "models": {
+      "directory": "",
+      "suffix": "",
+      "namespace_pattern": "",
+      "example": ""
+    },
+    "validators": {
+      "directory": "",
+      "suffix": "",
+      "namespace_pattern": "",
+      "example": ""
+    },
+    "middleware": {
+      "directory": "",
+      "suffix": "",
+      "namespace_pattern": "",
+      "example": ""
+    },
+    "migrations": {
+      "directory": "",
+      "naming_pattern": "",
+      "example": ""
+    },
+    "tests": {
+      "directory": "",
+      "naming_pattern": "",
+      "example": ""
+    }
+  },
+  "api_conventions": {
+    "route_prefix": "",
+    "admin_prefix": "",
+    "app_prefix": "",
+    "response_format": {
+      "success": { "code": "integer", "message": "string", "data": "mixed" },
+      "error":   { "code": "integer", "message": "string", "data": "mixed" }
+    },
+    "pagination": {
+      "page_param": "",
+      "page_size_param": "",
+      "default_page_size": null
+    }
+  },
+  "database_conventions": {
+    "table_prefix": "",
+    "primary_key": "",
+    "timestamps": {
+      "created_at": "",
+      "updated_at": ""
+    },
+    "soft_delete": {
+      "field": "",
+      "default": null
+    }
+  },
+  "code_style": {
+    "indent_style": "",
+    "indent_size": null,
+    "line_ending": "",
+    "doc_required": null,
+    "type_hints_required": null
+  },
+  "testing": {
+    "framework": "",
+    "directory": "",
+    "coverage_required": null,
+    "unit_test_pattern": "",
+    "feature_test_pattern": ""
+  },
+  "paths": {
+    "source": "",
+    "components": "",
+    "tests": "",
+    "config": ""
+  },
+  "commands": {
+    "test": "",
+    "lint": "",
+    "build": "",
+    "format": "",
+    "dev": ""
+  }
+}

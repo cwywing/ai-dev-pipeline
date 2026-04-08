@@ -131,6 +131,7 @@ def get_next_pending_stage() -> Optional[dict]:
             "task": task,
             "description": task.get("description", ""),
             "category": task.get("category", "general"),
+            "depends_on": task.get("depends_on", []),
         }
 
     # 报告被阻塞的任务
@@ -177,6 +178,10 @@ def _check_dependencies(task: dict, storage: TaskStorage) -> tuple:
     """
     检查任务依赖是否满足
 
+    逐条检查 depends_on 中的任务 ID，
+    要求前置任务的 dev + test 阶段均已完成才算满足。
+    未通过的依赖会通过 app_logger.info 打印，方便排查死锁。
+
     Returns:
         (satisfied: bool, blocked_by: list)
     """
@@ -184,7 +189,9 @@ def _check_dependencies(task: dict, storage: TaskStorage) -> tuple:
     if not depends_on:
         return True, []
 
+    task_id = task["id"]
     blocked = []
+
     for dep in depends_on:
         if isinstance(dep, dict):
             dep_id = dep.get("id") or dep.get("task_id")
@@ -193,11 +200,14 @@ def _check_dependencies(task: dict, storage: TaskStorage) -> tuple:
             dep_id = dep
             dep_reason = ""
 
-        if not storage.is_dependency_satisfied(dep_id):
+        if not storage.is_task_fully_completed(dep_id):
             info = {"id": dep_id}
             if dep_reason:
                 info["reason"] = dep_reason
             blocked.append(info)
+            app_logger.info(
+                f"任务 {task_id} 因依赖 {dep_id} 未完成被挂起"
+            )
 
     return len(blocked) == 0, blocked
 

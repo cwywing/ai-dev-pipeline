@@ -65,6 +65,8 @@ from scripts.config import (
     MAX_RETRIES,
     LOOP_SLEEP,
     get_timeout_for_stage,
+    get_project_config,
+    format_project_config_for_prompt,
 )
 from scripts.logger import app_logger
 
@@ -231,16 +233,157 @@ class AutomationEngine:
         组装传递给 Claude CLI 的 Prompt
 
         组成:
+        0. project-config.json 项目全局约定（如果已配置）
         1. CLAUDE.md 项目规范（如果存在）
+        1.5. 依赖上下文（depends_on 前置任务的产出）
         2. 阶段专用模板（如果存在）
         3. 任务上下文（description, acceptance, issues）
         """
         parts = []
 
+        # 0. 项目全局约定（最高优先级，确保 Agent 首先看到）
+        project_cfg_text = format_project_config_for_prompt(get_project_config())
+        if project_cfg_text:
+            parts.append(project_cfg_text)
+
         # 1. CLAUDE.md
         claude_md = PROJECT_ROOT / "CLAUDE.md"
         if claude_md.exists():
             parts.append(claude_md.read_text(encoding="utf-8", errors="replace"))
+
+        # 1.5. 依赖上下文（前置任务的产出注入）
+        dep_ctx = self._build_dependency_context(task_id)
+        if dep_ctx:
+            parts.append(dep_ctx)
+
+        # 2. 阶段模板
+        template = TEMPLATES_DIR / f"{stage}_prompt.md"
+        if template.exists():
+            tpl = template.read_text(encoding="utf-8", errors="replace")
+            tpl = tpl.replace("{TASK_ID}", task_id)
+            parts.append(tpl)
+
+        # 3. 任务上下文
+        ctx = self._build_task_context(task_id, stage)
+        if ctx:
+            parts.append(ctx)
+
+        return "\n\n".join(parts)
+
+    def _build_dependency_context(self, task_id: str) -> str:
+        """
+        构建依赖上下文：从 depends_on 前置任务的产出中
+        提取接口契约、设计决策、约束等信息，注入到 Prompt。
+
+        Returns:
+            Markdown 格式的依赖上下文文本，无依赖则返回空字符串
+        """
+        depends_on = self.storage.get_depends_on(task_id)
+        if not depends_on:
+            return ""
+
+        sections = []
+
+        for dep in depends_on:
+            # 支持字典格式 {"id": "xxx", "reason": "..."}
+            dep_id = dep.get("id") or dep.get("task_id") if isinstance(dep, dict) else dep
+
+            artifacts = self.storage.get_task_artifacts(dep_id)
+            has_content = any(artifacts.values())
+
+            if not has_content:
+                app_logger.debug(
+                    f"依赖上下文: {dep_id} 无可用产出，跳过"
+                )
+                continue
+
+            dep_desc = self.storage.get_description(dep_id)
+            block = [f"# [DEPENDENCY CONTEXT FROM: {dep_id}]"]
+            block.append("")
+
+            if dep_desc:
+                block.append(f"> {dep_desc}")
+                block.append("")
+
+            # 设计决策
+            decisions = artifacts.get("design_decisions", [])
+            if decisions:
+                block.append("## Design Decisions")
+                for d in decisions:
+                    if isinstance(d, dict):
+                        title = d.get("title", d.get("decision", ""))
+                        detail = d.get("detail", d.get("rationale", ""))
+                        block.append(f"- {title}")
+                        if detail:
+                            block.append(f"  {detail}")
+                    else:
+                        block.append(f"- {d}")
+                block.append("")
+
+            # 接口契约
+            contracts = artifacts.get("interface_contracts", [])
+            if contracts:
+                block.append("## Interface Contracts")
+                for c in contracts:
+                    if isinstance(c, dict):
+                        svc = c.get("service", c.get("name", ""))
+                        method = c.get("method", "")
+                        sig = c.get("signature", "")
+                        block.append(f"- **{svc}**")
+                        if method:
+                            block.append(f"  - method: `{method}`")
+                        if sig:
+                            block.append(f"  - signature: `{sig}`")
+                        # 额外字段（兼容 return_type / returns 两种命名）
+                        for k in ("params", "return_type", "returns",
+                                  "description", "throws"):
+                            v = c.get(k)
+                            if v:
+                                block.append(f"  - {k}: {v}")
+                    else:
+                        block.append(f"- {c}")
+                block.append("")
+
+            # 约束条件
+            constraints = artifacts.get("constraints", [])
+            if constraints:
+                block.append("## Constraints")
+                for c in constraints:
+                    if isinstance(c, dict):
+                        desc = c.get("description", c.get("rule", ""))
+                        scope = c.get("scope", c.get("module", ""))
+                        block.append(f"- [{scope}] {desc}" if scope else f"- {desc}")
+                    else:
+                        block.append(f"- {c}")
+                block.append("")
+
+            # 产出文件列表（简要）
+            files = artifacts.get("files", [])
+            if files:
+                block.append("## Files")
+                for f in files:
+                    block.append(f"- `{f}`")
+                block.append("")
+
+            sections.append("\n".join(block))
+            app_logger.info(
+                f"依赖上下文: {dep_id} 注入 "
+                f"(decisions={len(decisions)}, "
+                f"contracts={len(contracts)}, "
+                f"constraints={len(constraints)}, "
+                f"files={len(files)})"
+            )
+
+        if not sections:
+            return ""
+
+        header = (
+            "# [DEPENDENCY CONTEXT]\n\n"
+            "The following context was produced by prerequisite tasks. "
+            "You MUST respect these design decisions, interface contracts, "
+            "and constraints when implementing the current task.\n"
+        )
+        return header + "\n\n---\n\n".join(sections)
 
         # 2. 阶段模板
         template = TEMPLATES_DIR / f"{stage}_prompt.md"
@@ -456,8 +599,12 @@ class AutomationEngine:
 
         # 从任务配置获取阈值
         val_cfg = self.storage.get_validation_config(task_id)
-        threshold = val_cfg.get("threshold", 80.0)
+        threshold = val_cfg.get("threshold", 0.8)
         max_retries = val_cfg.get("max_retries", 3)
+
+        # 统一到百分制：threshold <= 1.0 视为 0-1 比例值
+        if threshold <= 1.0:
+            threshold = threshold * 100
 
         app_logger.info(f"Validation score: {score:.1f} (threshold: {threshold:.1f})")
 
@@ -554,6 +701,10 @@ class AutomationEngine:
             app_logger.success(
                 f"Stage completed: {task_id}/{stage}"
             )
+
+            # 知识库同步：dev/review 阶段完成时沉淀产出
+            if stage in ("dev", "review"):
+                self._sync_knowledge(task_id)
         else:
             if result["is_timeout"]:
                 count = self._increment_counter(
@@ -583,6 +734,61 @@ class AutomationEngine:
                     self._mark_skipped(task_id)
 
     # ========================================
+    #  知识库同步
+    # ========================================
+
+    def _sync_knowledge(self, task_id: str) -> None:
+        """
+        触发知识库同步
+
+        在 dev/review 阶段完成时调用，
+        将任务的接口契约和约束沉淀到全局知识库。
+        同步失败不影响主流程。
+        """
+        try:
+            from scripts.knowledge import KnowledgeManager
+            km = KnowledgeManager()
+            result = km.sync_task_artifacts(task_id)
+            total = result["contracts_synced"] + result["constraints_synced"]
+            if total > 0:
+                app_logger.info(
+                    f"[Knowledge Sync] {task_id}: "
+                    f"+{result['contracts_synced']} contracts, "
+                    f"+{result['constraints_synced']} constraints"
+                )
+        except Exception as e:
+            # 知识库同步不应阻塞主流程
+            app_logger.warning(f"[Knowledge Sync] {task_id} 失败: {e}")
+
+    # ========================================
+    #  Validation 裁判
+    # ========================================
+
+    def _run_validation(self, task_id: str,
+                        timeout_count: int) -> tuple:
+        """
+        执行 Validation 阶段（旁路常规 Agent 流程）
+
+        使用 SatisfactionValidator 作为 LLM 裁判，
+        将裁判输出写入临时文件供 _handle_validation 提取 <score>。
+
+        Returns:
+            (output_text: str, exit_code: int)
+        """
+        app_logger.info(f"[Validation] 启动裁判: {task_id}")
+
+        try:
+            from scripts.validate_satisfaction import SatisfactionValidator
+        except ImportError as e:
+            app_logger.error(f"[Validation] 无法导入 SatisfactionValidator: {e}")
+            return f"[Import error: {e}]\n<score>0</score>", 1
+
+        validator = SatisfactionValidator(task_id)
+        output_text, exit_code = validator.evaluate()
+
+        return output_text, exit_code
+
+    # ========================================
     #  主循环
     # ========================================
 
@@ -609,6 +815,17 @@ class AutomationEngine:
                        f"max={MAX_SILENCE_TIMEOUT}s, "
                        f"backoff=x{TIMEOUT_BACKOFF_FACTOR}")
         app_logger.info(f"Mode:      {'single-run' if self.single_run else 'continuous'}")
+
+        # 项目配置状态
+        project_cfg = get_project_config()
+        if project_cfg:
+            proj_name = project_cfg.get("project", {}).get("name", "")
+            proj_fw = project_cfg.get("tech_stack", {}).get("framework", "")
+            app_logger.info(f"Config:    project-config.json "
+                           f"(name={proj_name or '(empty)'}, "
+                           f"framework={proj_fw or '(empty)'})")
+        else:
+            app_logger.info("Config:    project-config.json not configured")
 
         # 主循环
         iteration = 0
@@ -649,12 +866,70 @@ class AutomationEngine:
                 self.timeout_dir, f"{task_id}_{stage}"
             )
 
-            # ── 4. 组装 Prompt ──────────────────────────
+            # ── 4. Validation 阶段：旁路常规流程 ──────────────────
+            if stage == "validation":
+                output_text, val_exit_code = self._run_validation(
+                    task_id, timeout_count
+                )
+                is_completed = (val_exit_code == 0)
+
+                if is_completed:
+                    # 将裁判输出写入临时文件，复用 _handle_validation 提取 <score>
+                    val_output_file = CLI_IO_DIR / "sessions" / f"val_{task_id}_result.txt"
+                    val_output_file.parent.mkdir(parents=True, exist_ok=True)
+                    val_output_file.write_text(output_text, encoding="utf-8")
+
+                    passed, score = self._handle_validation(
+                        task_id, val_output_file
+                    )
+                    if passed:
+                        self.storage.mark_stage(task_id, "validation")
+                        self.storage.clear_cache()
+                        self._clear_counters(task_id, "validation")
+                        app_logger.success(
+                            f"Task {task_id} validation PASSED "
+                            f"(score={score:.1f})"
+                        )
+                        self._settle_stage(task_id, stage, True, {
+                            "exit_code": 0,
+                            "output_file": val_output_file,
+                            "is_timeout": False,
+                            "session_id": f"val_{task_id}",
+                        })
+
+                        if self.storage.is_all_stages_complete(task_id):
+                            self.storage.complete_task(task_id)
+                            self.storage.clear_cache()
+                            app_logger.success(f"Task FULLY COMPLETE: {task_id}")
+                    else:
+                        # 回滚已完成，结算为失败
+                        self._settle_stage(task_id, stage, False, {
+                            "exit_code": val_exit_code,
+                            "output_file": val_output_file,
+                            "is_timeout": False,
+                            "session_id": f"val_{task_id}",
+                        })
+                else:
+                    # 裁判执行失败（超时/异常），走常规失败结算
+                    is_timeout = val_exit_code in (14, 124)
+                    self._settle_stage(task_id, stage, False, {
+                        "exit_code": val_exit_code,
+                        "output_file": CLI_IO_DIR / "sessions" / f"val_{task_id}_result.txt",
+                        "is_timeout": is_timeout,
+                        "session_id": f"val_{task_id}",
+                    })
+
+                if self.single_run:
+                    return 0
+                time.sleep(LOOP_SLEEP)
+                continue
+
+            # ── 5. 组装 Prompt ──────────────────────────
             prompt = self._assemble_prompt(task_id, stage)
             prompt_size = len(prompt.encode("utf-8"))
             app_logger.info(f"Prompt assembled: {prompt_size // 1024}KB")
 
-            # ── 5. 执行 Agent ──────────────────────────
+            # ── 6. 执行 Agent ──────────────────────────
             result = self._execute_agent(
                 prompt=prompt,
                 stage=stage,
@@ -662,7 +937,7 @@ class AutomationEngine:
                 timeout_count=timeout_count,
             )
 
-            # ── 6. 检测阶段是否完成 ──────────────────────────
+            # ── 7. 检测阶段是否完成 ──────────────────────────
             is_completed = False
 
             if result["exit_code"] == 0:
@@ -677,23 +952,6 @@ class AutomationEngine:
                 app_logger.warning(
                     f"Agent exited with code {result['exit_code']}"
                 )
-
-            # ── 7. Validation 特殊处理 ──────────────────────────
-            if stage == "validation" and is_completed:
-                passed, score = self._handle_validation(
-                    task_id, result["output_file"]
-                )
-                if passed:
-                    self.storage.mark_stage(task_id, "validation")
-                    self.storage.clear_cache()
-                    self._clear_counters(task_id, "validation")
-                    app_logger.success(
-                        f"Task {task_id} validation PASSED "
-                        f"(score={score:.1f})"
-                    )
-                else:
-                    # 回滚已完成，回到循环头部重新开始 Dev 阶段
-                    is_completed = False
 
             # ── 8. 结算 ──────────────────────────
             if is_completed:

@@ -61,25 +61,24 @@ python .harness/scripts/run_automation.py --once -v
 .harness/
 ├── README.md                    # 本文件
 ├── task-index.json              # 任务索引（自动管理）
-├── project-config.json          # 项目配置（技术栈、路径、命令）
-├── .env                         # 环境配置
+├── .env.example                 # 环境配置模板
 ├── requirements.txt             # Python 依赖
 │
 ├── scripts/                     # 核心脚本（统一 Python 架构）
-│   ├── config.py                # 配置中心（路径、环境变量、超时参数）
+│   ├── config.py                # 配置中心（路径、环境变量、超时、项目配置加载）
 │   ├── logger.py                # 日志系统（loguru / stdlib 双后端）
-│   ├── run_automation.py        # 主引擎（AutomationEngine）
+│   ├── run_automation.py        # 主引擎（智能调度、依赖注入、知识同步）
 │   ├── task_storage.py          # 任务存储引擎（O(1) 存取、阶段管理）
-│   ├── next_stage.py            # 下一阶段调度器
+│   ├── next_stage.py            # 调度器（P0~P3 优先级、依赖阻断）
 │   ├── detect_stage_completion.py  # 阶段完成检测器
 │   ├── dual_timeout.py          # 双重超时执行器（Unix PTY / Windows threading）
+│   ├── validate_satisfaction.py # LLM 裁判（满意度验证、CodeReader）
+│   ├── knowledge.py             # 知识库管理（自动同步、契约/约束去重合并）
 │   ├── api_flow_test.py         # API 全流程测试
 │   ├── add_task.py              # 创建新任务
 │   ├── harness-tools.py         # 任务管理工具
-│   ├── knowledge.py             # 知识库管理
 │   ├── artifacts.py             # 产出记录
 │   ├── task_utils.py            # TaskCodec 编解码
-│   ├── task_file_storage.py     # 兼容层（索引管理）
 │   ├── reset_harness.py         # 系统重置
 │   └── ...                      # 其他辅助脚本
 │
@@ -128,11 +127,62 @@ python .harness/scripts/run_automation.py --once -v
 | **Test** | 发现问题 | 测试执行痕迹（assert / pass / fail） |
 | **Review** | 代码审查 | 关键词命中 + 文本量 |
 
-可选第四阶段 **Validation**（需在任务中启用）：
-- AI 打分 → 未达标则回滚到 Dev 阶段并注入反馈
-- 最多重试 `max_retries` 次，阈值 `threshold`
+可选第四阶段 **Validation**（LLM-as-a-Judge 满意度验证）：
+- `SatisfactionValidator` 作为独立裁判，只读取任务变更的文件（Token 优化）
+- 逐条验收标准对比，输出 `<score>0~100</score>`
+- 未达标（<80 分）自动回滚到 Dev 阶段并注入评审反馈
+- 最多重试 `max_retries` 次
 
 **核心优势**：职责分离，独立审查，Bug 发现率从 ~60% 提升到 ~90%
+
+---
+
+## 智能调度与知识沉淀（Phase 5）
+
+### 项目约定注入
+
+在项目根目录放置 `project-config.json`，定义技术栈、命名规范、API 约定、代码风格等。自动化引擎启动时会自动读取并注入到每个 Agent 的 Prompt 顶部：
+
+```
+Prompt 注入顺序:
+0. [PROJECT GLOBAL CONVENTIONS]  ← project-config.json
+1. CLAUDE.md
+1.5 [DEPENDENCY CONTEXT]         ← 前置任务的产出
+2. {stage}_prompt.md
+3. Task Context
+```
+
+### 优先级与依赖调度
+
+- **P0~P3 优先级排序**：高优先级任务优先调度
+- **依赖阻断**：任务的 `depends_on` 字段中未完成的前置任务会挂起当前任务
+- **依赖上下文注入**：前置任务的接口契约、设计决策、约束自动注入当前任务 Prompt
+
+### 知识库自动同步
+
+当 Dev / Review 阶段完成时，引擎自动从任务产出中提取接口契约和约束，合并写入全局知识库：
+
+```
+Task 完成 → sync_task_artifacts()
+  ├─ interface_contracts → knowledge/contracts.json（去重合并）
+  └─ constraints         → knowledge/constraints.json（去重合并）
+```
+
+后续任务通过依赖上下文注入机制自动获取这些知识。
+
+### LLM 裁判（Validation 阶段）
+
+`validate_satisfaction.py` 实现完整的 LLM-as-a-Judge 验证：
+
+```bash
+# 手动对指定任务执行验证
+python .harness/scripts/validate_satisfaction.py --task-id Model_001
+```
+
+- `CodeReader` 精准提取：只读 artifact 中记录的变更文件（50KB 封顶）
+- 严厉审查官 Prompt：逐条 AC 对比，YES / PARTIAL / NO 状态
+- 复用 `DualTimeoutExecutor`，超时自动返回 0 分
+- 缺失 `<score>` 标签时自动补 0 分
 
 ---
 
@@ -184,12 +234,17 @@ python .harness/scripts/harness-tools.py --action mark-done --id TASK_ID
 ### 知识库 & API 测试
 
 ```bash
-# 查询接口契约
-python .harness/scripts/knowledge.py --action query --search "UserService"
+# 从任务产出同步到知识库
+python .harness/scripts/knowledge.py --action sync --task-id Model_001
 
-# 添加全局约束
-python .harness/scripts/knowledge.py --action add-constraint \
-  --constraint "所有API必须返回统一格式响应"
+# 列出所有知识
+python .harness/scripts/knowledge.py --action list
+
+# 查询服务契约
+python .harness/scripts/knowledge.py --action query --service UserService
+
+# 手动执行 LLM 裁判验证
+python .harness/scripts/validate_satisfaction.py --task-id Model_001
 
 # API 全流程测试
 python .harness/scripts/api_flow_test.py http://localhost:8000
@@ -280,16 +335,25 @@ python .harness/scripts/reset_harness.py
 │                    自动化工作流                              │
 ├─────────────────────────────────────────────────────────────┤
 │  1. run_automation.py 主循环启动                             │
-│  2. next_stage.py → 获取下一个待处理阶段（原生 import）       │
-│  3. 组装 Prompt（CLAUDE.md + 任务 + 模板）                  │
+│  2. next_stage.py → P0~P3 优先级排序 + 依赖阻断             │
+│  3. 组装 Prompt                                             │
+│     a. project-config.json → [PROJECT GLOBAL CONVENTIONS]   │
+│     b. CLAUDE.md                                            │
+│     c. _build_dependency_context() → [DEPENDENCY CONTEXT]   │
+│     d. {stage}_prompt.md + 任务上下文                        │
 │  4. dual_timeout.py → 调用 Claude Code CLI                  │
 │     - Unix: PTY (pty/fcntl/select)                          │
 │     - Windows: threading + subprocess                       │
 │  5. detect_stage_completion.py → 检测完成状态               │
 │  6. task_storage.py → 更新阶段状态                           │
-│  7. 完成 → 下一阶段                                         │
+│  7. _sync_knowledge() → 知识库自动沉淀                       │
+│     - interface_contracts → contracts.json                  │
+│     - constraints → constraints.json                        │
+│  8. Validation: validate_satisfaction.py → LLM 裁判打分     │
+│     - <score>80</score> → 通过                              │
+│     - <score>45</score> → 回滚到 Dev + 注入反馈            │
+│  9. 完成 → 下一阶段                                         │
 │     失败 → 重试（最多 MAX_RETRIES 次）→ 跳过                 │
-│  8. Validation 未达标 → 回滚到 Dev + 注入反馈 → 重新执行     │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -303,12 +367,14 @@ python .harness/scripts/reset_harness.py
 
 ```
 run_automation.py (主引擎)
-    ├── import next_stage        # 下一阶段调度
+    ├── import next_stage            # P0~P3 优先级调度 + 依赖阻断
     ├── import detect_stage_completion  # 阶段完成检测
-    ├── import task_storage      # 任务存储读写
-    ├── import dual_timeout      # Claude CLI 执行
-    ├── import config            # 全局配置
-    └── import logger            # 日志系统
+    ├── import task_storage          # 任务存储读写
+    ├── import knowledge             # 知识库自动同步
+    ├── import validate_satisfaction # LLM 裁判（Validation 阶段）
+    ├── import dual_timeout          # Claude CLI 执行
+    ├── import config                # 全局配置 + project-config.json
+    └── import logger                # 日志系统
 ```
 
 ### 跨平台超时执行
