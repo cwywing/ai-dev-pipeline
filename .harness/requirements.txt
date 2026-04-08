@@ -1,0 +1,14 @@
+# Harness Python Dependencies
+# 安装: pip install -r requirements.txt
+
+# 环境变量加载
+python-dotenv==1.0.1
+
+# 日志系统
+loguru==0.7.2
+
+# HTTP 请求 (用于 API 测试)
+requests>=2.31.0
+
+# 类型安全配置
+pydantic>=2.0.0

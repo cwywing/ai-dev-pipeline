@@ -1,870 +1,245 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+from __future__ import annotations
+
 """
-Output the next pending stage from task-index.json in a prompt-friendly format.
-支持三阶段质量保证系统：dev → test → review
+下一阶段调度器
+====================================
 
-支持验证类任务自动执行（2026-02-16 优化）
+基于原 next_stage.py 重写，返回结构化字典而非纯文本。
 
-Returns exit code 1 if no pending stages exist.
+核心逻辑：
+1. 按 P0→P3 优先级排序
+2. 跳过被 .automation_skip 标记的任务
+3. 检查任务依赖是否已满足
+4. 自动执行验证类任务（test/style）
+5. 按 dev → test → review → validation 顺序推进
+
+使用方式:
+    from scripts.next_stage import get_next_pending_stage
+
+    result = get_next_pending_stage()
+    # result = {"task_id": ..., "stage": ..., "task": ..., "description": ...}
+    # result = None  (所有任务已完成)
+
+====================================
 """
 
-import json
-import sys
 import os
+import sys
 import subprocess
 from datetime import datetime
 from pathlib import Path
-
-# 导入统一输出模块
-from console_output import success, error, warning, info
-
-# Load .env file if it exists (before ENABLE_AUTO_VALIDATION is used)
-def load_env_file(env_path: str = '.harness/.env'):
-    """Load environment variables from .env file"""
-    env_file = Path(env_path)
-    if env_file.exists():
-        with open(env_file, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith('#') and '=' in line:
-                    key, value = line.split('=', 1)
-                    os.environ[key.strip()] = value.strip()
-
-load_env_file()
-
-# 导入任务编解码器
-from task_utils import TaskCodec, load_tasks, save_tasks
-
-# 导入单文件存储系统
-try:
-    from task_file_storage import TaskFileStorage
-    _storage = None  # 延迟初始化
-except ImportError:
-    _storage = None
-    warning("无法导入 TaskFileStorage，单文件存储功能将不可用", file=sys.stderr)
+from typing import Optional
 
 
-def _get_storage():
-    """获取 TaskFileStorage 实例（延迟初始化）"""
-    global _storage
-    if _storage is None:
-        try:
-            from task_file_storage import TaskFileStorage
-            _storage = TaskFileStorage()
-            _storage.initialize()
-        except Exception as e:
-            warning(f"初始化 TaskFileStorage 失败: {e}", file=sys.stderr)
-            return None
-    return _storage
+# 路径注入
+_scripts_dir = Path(__file__).parent.resolve()
+sys.path.insert(0, str(_scripts_dir.parent))
+
+from scripts.config import (
+    HARNESS_DIR,
+    TASKS_DIR,
+    ENABLE_AUTO_VALIDATION,
+)
+from scripts.logger import app_logger
+from scripts.task_storage import TaskStorage
 
 
-def run_validation_task(task_id, task):
-    """
-    自动执行验证类任务
+# ========================================
+#  验证类任务配置
+# ========================================
 
-    Args:
-        task_id: 任务 ID
-        task: 任务字典
+VALIDATION_CATEGORIES = ["test", "style", "validation"]
 
-    Returns:
-        bool: 执行是否成功
-    """
-    category = task.get('category', '')
-
-    info(f"检测到验证类任务: {task_id} (category: {category})", file=sys.stderr)
-
-    # 获取执行命令
-    command = VALIDATION_COMMANDS.get(category)
-    if not command:
-        warning(f"未定义 category '{category}' 的验证命令", file=sys.stderr)
-        return False
-
-    info(f"自动执行验证命令: {command}", file=sys.stderr)
-
-    # 执行命令
-    try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            encoding='utf-8',
-            errors='replace',
-            timeout=600  # 10分钟超时
-        )
-
-        if result.returncode == 0:
-            success(f"验证任务 {task_id} 执行成功", file=sys.stderr)
-
-            # 标记所有阶段为完成
-            mark_task_stages_complete(task_id)
-            return True
-        else:
-            error(f"验证任务 {task_id} 执行失败 (退出码: {result.returncode})", file=sys.stderr)
-            info(f"输出: {result.stdout}", file=sys.stderr)
-            info(f"错误: {result.stderr}", file=sys.stderr)
-            return False
-
-    except subprocess.TimeoutExpired:
-        warning(f"验证任务 {task_id} 执行超时（10分钟）", file=sys.stderr)
-        return False
-    except Exception as e:
-        warning(f"验证任务 {task_id} 执行异常: {e}", file=sys.stderr)
-        return False
-
-
-def mark_task_stages_complete(task_id):
-    """标记任务的所有阶段为完成"""
-    try:
-        # 优先使用 TaskFileStorage
-        storage = _get_storage()
-        if storage is not None:
-            task = storage.load_task(task_id)
-            if not task:
-                error(f"未找到任务 {task_id}", file=sys.stderr)
-                return False
-
-            # 确保 stages 字段存在
-            if 'stages' not in task:
-                task['stages'] = {
-                    'dev': {'completed': False, 'completed_at': None, 'issues': []},
-                    'test': {'completed': False, 'completed_at': None, 'issues': [], 'test_results': {}},
-                    'review': {'completed': False, 'completed_at': None, 'issues': [], 'risk_level': None}
-                }
-
-            # 标记所有阶段为完成
-            now = datetime.now().isoformat()
-
-            for stage_name in ['dev', 'test', 'review']:
-                task['stages'][stage_name]['completed'] = True
-                task['stages'][stage_name]['completed_at'] = now
-
-            # 标记任务为完成
-            task['passes'] = True
-
-            # 保存任务（会自动移动到 completed）
-            if storage.save_task(task):
-                success(f"任务 {task_id} 的所有阶段已标记为完成", file=sys.stderr)
-                return True
-            else:
-                error(f"保存任务 {task_id} 失败", file=sys.stderr)
-                return False
-
-        # 回退到旧方式
-        # 使用 TaskCodec 加载和保存
-        data = load_tasks()
-
-        # 查找并更新任务
-        for task in data.get('tasks', []):
-            if task['id'] == task_id:
-                # 确保 stages 字段存在
-                if 'stages' not in task:
-                    task['stages'] = {
-                        'dev': {'completed': False, 'completed_at': None, 'issues': []},
-                        'test': {'completed': False, 'completed_at': None, 'issues': [], 'test_results': {}},
-                        'review': {'completed': False, 'completed_at': None, 'issues': [], 'risk_level': None}
-                    }
-
-                # 标记所有阶段为完成
-                now = datetime.now().isoformat()
-
-                for stage_name in ['dev', 'test', 'review']:
-                    task['stages'][stage_name]['completed'] = True
-                    task['stages'][stage_name]['completed_at'] = now
-
-                # 标记任务为完成
-                task['passes'] = True
-                success(f"任务 {task_id} 的所有阶段已标记为完成", file=sys.stderr)
-                break
-
-        # 保存到 task.json（使用 TaskCodec）
-        save_tasks(data)
-
-        return True
-
-    except Exception as e:
-        warning(f"标记任务完成失败: {e}", file=sys.stderr)
-        return False
-
-
-# ═══════════════════════════════════════════════════════════════
-#                   验证类任务配置
-# ═══════════════════════════════════════════════════════════════
-
-# 验证类任务的 category
-VALIDATION_CATEGORIES = ['test', 'style', 'validation']
-
-# 自动执行的命令映射
 VALIDATION_COMMANDS = {
-    'test': 'php8 artisan test',
-    'style': './vendor/bin/pint --test',
+    "test": "php artisan test",
+    "style": "vendor/bin/pint --test",
 }
 
-# 是否启用验证任务自动执行
-ENABLE_AUTO_VALIDATION = os.environ.get('ENABLE_AUTO_VALIDATION', 'true').lower() == 'true'
+# 优先级排序映射
+_PRIORITY_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 
 
-def check_dependencies(task_id, task, storage=None):
+# ========================================
+#  核心函数
+# ========================================
+
+def get_next_pending_stage() -> Optional[dict]:
     """
-    检查任务依赖是否已满足
-
-    支持两种依赖格式（向后兼容）：
-    - 简单格式: ["Model_001", "Auth_001"]
-    - 结构化格式: [{"id": "Model_001", "reason": "需要用户模型"}, {"id": "Auth_001", "reason": "需要认证逻辑"}]
-
-    Args:
-        task_id: 任务 ID
-        task: 任务字典
-        storage: TaskFileStorage 实例（可选）
+    获取下一个待处理的任务阶段
 
     Returns:
-        tuple: (是否满足依赖, 阻塞信息列表)
-               阻塞信息包含: {"id": 任务ID, "reason": 原因}
+        dict: {
+            "task_id": str,
+            "stage": str,          # dev / test / review / validation
+            "task": dict,          # 完整任务数据
+            "description": str,
+            "category": str,
+        }
+        None: 没有待处理任务
     """
-    depends_on = task.get('depends_on', [])
+    storage = TaskStorage()
 
+    # 加载所有待处理任务
+    tasks = storage.load_all_pending_tasks()
+
+    # 按优先级排序
+    tasks.sort(key=lambda t: _PRIORITY_ORDER.get(t.get("priority", "P2"), 1))
+
+    # 加载跳过列表
+    skip_dir = HARNESS_DIR / ".automation_skip"
+    skipped = set()
+    if skip_dir.exists():
+        skipped = {f.name for f in skip_dir.iterdir() if f.is_file()}
+
+    blocked_report = []
+
+    for task in tasks:
+        task_id = task["id"]
+
+        # 跳过被标记的任务
+        if task_id in skipped:
+            continue
+
+        # 依赖检查
+        deps_ok, blocked_by = _check_dependencies(task, storage)
+        if not deps_ok:
+            blocked_report.append({"task_id": task_id, "blocked_by": blocked_by})
+            continue
+
+        # 验证类任务自动执行
+        if ENABLE_AUTO_VALIDATION:
+            category = task.get("category", "")
+            if category in VALIDATION_CATEGORIES and not task.get("passes", False):
+                if _auto_execute_validation(task_id, task, category, storage):
+                    app_logger.info(f"验证任务 {task_id} 自动完成，继续下一个")
+                    continue
+                else:
+                    app_logger.warning(f"验证任务 {task_id} 自动执行失败，跳过")
+                    _mark_skipped(task_id, skip_dir)
+                    continue
+
+        # 确定下一个阶段
+        stage = _next_stage_for(task)
+        if stage is None:
+            continue
+
+        return {
+            "task_id": task_id,
+            "stage": stage,
+            "task": task,
+            "description": task.get("description", ""),
+            "category": task.get("category", "general"),
+        }
+
+    # 报告被阻塞的任务
+    if blocked_report:
+        app_logger.info("部分任务因依赖未满足被跳过:")
+        for item in blocked_report:
+            deps_str = ", ".join(
+                b.get("id", str(b)) + (f" ({b['reason']})" if b.get("reason") else "")
+                for b in item["blocked_by"]
+            )
+            app_logger.info(f"  {item['task_id']} 等待: {deps_str}")
+
+    return None
+
+
+def _next_stage_for(task: dict) -> Optional[str]:
+    """
+    确定任务的下一个待处理阶段
+
+    阶段推进顺序: dev → test → review → validation(可选)
+    """
+    # 旧格式（无 stages 字段）
+    if "stages" not in task:
+        if not task.get("passes", False):
+            return "dev"
+        return None
+
+    stages = task["stages"]
+
+    for stage_name in ["dev", "test", "review"]:
+        if not stages.get(stage_name, {}).get("completed", False):
+            return stage_name
+
+    # validation 阶段（仅在启用时）
+    val_cfg = task.get("validation", {})
+    if val_cfg.get("enabled", False):
+        if not stages.get("validation", {}).get("completed", False):
+            return "validation"
+
+    return None
+
+
+def _check_dependencies(task: dict, storage: TaskStorage) -> tuple:
+    """
+    检查任务依赖是否满足
+
+    Returns:
+        (satisfied: bool, blocked_by: list)
+    """
+    depends_on = task.get("depends_on", [])
     if not depends_on:
         return True, []
 
-    blocked_by = []
-
-    # 检查每个依赖任务
+    blocked = []
     for dep in depends_on:
-        # 支持两种格式：字符串或字典
         if isinstance(dep, dict):
-            dep_id = dep.get('id') or dep.get('task_id')
-            dep_reason = dep.get('reason', '未指定原因')
+            dep_id = dep.get("id") or dep.get("task_id")
+            dep_reason = dep.get("reason", "")
         else:
             dep_id = dep
-            dep_reason = None
+            dep_reason = ""
 
-        dep_completed = False
-
-        # 优先使用 TaskFileStorage
-        if storage is not None:
-            # 检查依赖任务是否在 completed 目录
-            completed_dir = storage.harness_dir / 'completed'
-            completed_file = completed_dir / f'{dep_id}.json'
-
-            if completed_file.exists():
-                dep_completed = True
-            else:
-                # 检查是否在 pending 目录且已完成所有阶段
-                dep_task = storage.load_task(dep_id)
-                if dep_task and dep_task.get('passes', False):
-                    dep_completed = True
-                elif dep_task:
-                    # 检查所有阶段是否完成
-                    stages = dep_task.get('stages', {})
-                    all_stages_complete = all(
-                        stages.get(s, {}).get('completed', False)
-                        for s in ['dev', 'test', 'review']
-                    )
-                    if all_stages_complete:
-                        dep_completed = True
-        else:
-            # 回退到旧方式 - 检查 task.json
-            data = load_tasks()
-            for t in data.get('tasks', []):
-                if t['id'] == dep_id:
-                    if t.get('passes', False):
-                        dep_completed = True
-                    else:
-                        # 检查所有阶段是否完成
-                        stages = t.get('stages', {})
-                        all_stages_complete = all(
-                            stages.get(s, {}).get('completed', False)
-                            for s in ['dev', 'test', 'review']
-                        )
-                        if all_stages_complete:
-                            dep_completed = True
-                    break
-
-        if not dep_completed:
-            blocked_info = {"id": dep_id}
+        if not storage.is_dependency_satisfied(dep_id):
+            info = {"id": dep_id}
             if dep_reason:
-                blocked_info["reason"] = dep_reason
-            blocked_by.append(blocked_info)
+                info["reason"] = dep_reason
+            blocked.append(info)
 
-    return len(blocked_by) == 0, blocked_by
+    return len(blocked) == 0, blocked
 
 
-def get_next_pending_stage():
-    """获取下一个待处理的阶段"""
-    # 优先使用 TaskFileStorage
-    storage = _get_storage()
-    if storage is not None:
-        try:
-            # 加载所有待处理任务
-            tasks = storage.load_all_pending_tasks()
+def _auto_execute_validation(task_id: str, task: dict,
+                             category: str, storage: TaskStorage) -> bool:
+    """自动执行验证类任务"""
+    command = VALIDATION_COMMANDS.get(category)
+    if not command:
+        app_logger.warning(f"未定义 category '{category}' 的验证命令")
+        return False
 
-            # 获取跳过的任务列表
-            skip_dir = os.path.join(storage.harness_dir, '.automation_skip')
-            skipped_tasks = set()
-            if os.path.exists(skip_dir):
-                for f in os.listdir(skip_dir):
-                    skipped_tasks.add(f)
+    app_logger.info(f"自动执行验证命令: {command}")
 
-            # Sort tasks by priority (P0 < P1 < P2 < P3)
-            priority_order = {'P0': 0, 'P1': 1, 'P2': 2, 'P3': 3}
-            tasks_sorted = sorted(tasks, key=lambda t: priority_order.get(t.get('priority', 'P2'), 1))
-
-            # Track blocked tasks for reporting
-            blocked_tasks = []
-
-            # Find the first task with pending stages
-            for task in tasks_sorted:
-                task_id = task['id']
-
-                # Skip if task is permanently skipped
-                if task_id in skipped_tasks:
-                    continue
-
-                # ═══════════════════════════════════════════════════════════════
-                #                   依赖检查（新增）
-                # ═══════════════════════════════════════════════════════════════
-                deps_satisfied, blocked_by = check_dependencies(task_id, task, storage)
-                if not deps_satisfied:
-                    blocked_tasks.append({
-                        'task_id': task_id,
-                        'blocked_by': blocked_by
-                    })
-                    continue  # 跳过此任务，检查下一个
-
-                # ═══════════════════════════════════════════════════════════════
-                #                   验证类任务自动执行
-                # ═══════════════════════════════════════════════════════════════
-                if ENABLE_AUTO_VALIDATION:
-                    category = task.get('category', '')
-                    if category in VALIDATION_CATEGORIES:
-                        # 检查任务是否已完成
-                        if task.get('passes', False):
-                            continue
-
-                        # 自动执行验证任务
-                        info(f"\n{'='*60}", file=sys.stderr)
-                        info(f"自动化系统检测到验证类任务", file=sys.stderr)
-                        info(f"{'='*60}\n", file=sys.stderr)
-
-                        success_result = run_validation_task(task_id, task)
-
-                        if success_result:
-                            # 任务成功完成，继续下一个任务
-                            success(f"验证任务 {task_id} 已自动完成，继续下一个任务\n", file=sys.stderr)
-                            continue
-                        else:
-                            # 验证失败，跳过此任务避免无限循环
-                            warning(f"验证任务 {task_id} 自动执行失败", file=sys.stderr)
-                            info(f"将跳过此任务，继续处理其他任务", file=sys.stderr)
-                            info(f"提示：你可以手动修复问题后，删除 .automation_skip/{task_id} 文件重新尝试\n", file=sys.stderr)
-
-                            # 标记为跳过，避免无限循环
-                            skip_dir = os.path.join(storage.harness_dir, '.automation_skip')
-                            os.makedirs(skip_dir, exist_ok=True)
-                            with open(f"{skip_dir}/{task_id}", 'w') as f:
-                                f.write(f"自动执行失败于 {datetime.now().isoformat()}\n")
-
-                            continue
-
-                # Check if task has stages field
-                if 'stages' not in task:
-                    # Old format, use passes field
-                    if not task.get('passes', False):
-                        return {
-                            'task_id': task_id,
-                            'stage': 'dev',
-                            'task': task,
-                            'is_legacy': True
-                        }
-                else:
-                    # New format, check stages in order
-                    stages = task['stages']
-
-                    # Ensure all stages exist
-                    for stage_name in ['dev', 'test', 'review']:
-                        if stage_name not in stages:
-                            stages[stage_name] = {'completed': False}
-
-                    # Stage 1: dev
-                    if not stages['dev']['completed']:
-                        return {
-                            'task_id': task_id,
-                            'stage': 'dev',
-                            'task': task,
-                            'is_legacy': False
-                        }
-
-                    # Stage 2: test
-                    if not stages['test']['completed']:
-                        return {
-                            'task_id': task_id,
-                            'stage': 'test',
-                            'task': task,
-                            'is_legacy': False
-                        }
-
-                    # Stage 3: review
-                    if not stages['review']['completed']:
-                        return {
-                            'task_id': task_id,
-                            'stage': 'review',
-                            'task': task,
-                            'is_legacy': False
-                        }
-
-                    # Stage 4: validation（新增：满意度验证阶段）
-                    # 只在 validation 配置启用时进入该阶段
-                    validation_config = task.get('validation', {})
-                    if validation_config.get('enabled', False):
-                        if not stages.get('validation', {}).get('completed', False):
-                            return {
-                                'task_id': task_id,
-                                'stage': 'validation',
-                                'task': task,
-                                'is_legacy': False
-                            }
-
-            # No pending stages
-            # Report blocked tasks if any
-            if blocked_tasks:
-                info("\n# 部分任务因依赖未满足而被跳过:", file=sys.stderr)
-                for bt in blocked_tasks:
-                    blocked_parts = []
-                    for b in bt['blocked_by']:
-                        if isinstance(b, dict):
-                            blocked_id = b.get('id', 'unknown')
-                            blocked_reason = b.get('reason', '')
-                            if blocked_reason:
-                                blocked_parts.append(f"{blocked_id} ({blocked_reason})")
-                            else:
-                                blocked_parts.append(blocked_id)
-                        else:
-                            blocked_parts.append(str(b))
-                    blocked_by_str = ', '.join(blocked_parts)
-                    info(f"#   {bt['task_id']} 等待: {blocked_by_str}", file=sys.stderr)
-                info("", file=sys.stderr)
-
-            return None
-
-        except FileNotFoundError:
-            error(f"task-index.json not found", file=sys.stderr)
-            sys.exit(2)
-        except json.JSONDecodeError as e:
-            error(f"Invalid JSON in task-index.json: {e}", file=sys.stderr)
-            sys.exit(2)
-
-    # 回退到旧方式
     try:
-        # 使用 TaskCodec 加载
-        data = load_tasks()
+        result = subprocess.run(
+            command, shell=True,
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
+            timeout=600, cwd=HARNESS_DIR.parent,
+        )
 
-        # 获取跳过的任务列表
-        skip_dir = os.path.join(os.path.dirname(__file__), '..', '.automation_skip')
-        skipped_tasks = set()
-        if os.path.exists(skip_dir):
-            for f in os.listdir(skip_dir):
-                skipped_tasks.add(f)
-
-        # Track blocked tasks for reporting
-        blocked_tasks = []
-
-        # Find the first task with pending stages
-        for task in data.get('tasks', []):
-            task_id = task['id']
-
-            # Skip if task is permanently skipped
-            if task_id in skipped_tasks:
-                continue
-
-            # ═══════════════════════════════════════════════════════════════
-            #                   依赖检查（新增）
-            # ═══════════════════════════════════════════════════════════════
-            deps_satisfied, blocked_by = check_dependencies(task_id, task, None)
-            if not deps_satisfied:
-                blocked_tasks.append({
-                    'task_id': task_id,
-                    'blocked_by': blocked_by
-                })
-                continue  # 跳过此任务，检查下一个
-
-            # ═══════════════════════════════════════════════════════════════
-            #                   验证类任务自动执行
-            # ═══════════════════════════════════════════════════════════════
-            if ENABLE_AUTO_VALIDATION:
-                category = task.get('category', '')
-                if category in VALIDATION_CATEGORIES:
-                    # 检查任务是否已完成
-                    if task.get('passes', False):
-                        continue
-
-                    # 自动执行验证任务
-                    info(f"\n{'='*60}", file=sys.stderr)
-                    info(f"自动化系统检测到验证类任务", file=sys.stderr)
-                    info(f"{'='*60}\n", file=sys.stderr)
-
-                    success_result = run_validation_task(task_id, task)
-
-                    if success_result:
-                        # 任务成功完成，继续下一个任务
-                        success(f"验证任务 {task_id} 已自动完成，继续下一个任务\n", file=sys.stderr)
-                        continue
-                    else:
-                        # 验证失败，跳过此任务避免无限循环
-                        warning(f"验证任务 {task_id} 自动执行失败", file=sys.stderr)
-                        info(f"将跳过此任务，继续处理其他任务", file=sys.stderr)
-                        info(f"提示：你可以手动修复问题后，删除 .automation_skip/{task_id} 文件重新尝试\n", file=sys.stderr)
-
-                        # 标记为跳过，避免无限循环
-                        skip_dir = os.path.join(os.path.dirname(__file__), '..', '.automation_skip')
-                        os.makedirs(skip_dir, exist_ok=True)
-                        with open(f"{skip_dir}/{task_id}", 'w') as f:
-                            f.write(f"自动执行失败于 {datetime.now().isoformat()}\n")
-
-                        continue
-
-            # Check if task has stages field
-            if 'stages' not in task:
-                # Old format, use passes field
-                if not task.get('passes', False):
-                    return {
-                        'task_id': task_id,
-                        'stage': 'dev',
-                        'task': task,
-                        'is_legacy': True
-                    }
-            else:
-                # New format, check stages in order
-                stages = task['stages']
-
-                # Ensure all stages exist
-                for stage_name in ['dev', 'test', 'review']:
-                    if stage_name not in stages:
-                        stages[stage_name] = {'completed': False}
-
-                # Stage 1: dev
-                if not stages['dev']['completed']:
-                    return {
-                        'task_id': task_id,
-                        'stage': 'dev',
-                        'task': task,
-                        'is_legacy': False
-                    }
-
-                # Stage 2: test
-                if not stages['test']['completed']:
-                    return {
-                        'task_id': task_id,
-                        'stage': 'test',
-                        'task': task,
-                        'is_legacy': False
-                    }
-
-                # Stage 3: review
-                if not stages['review']['completed']:
-                    return {
-                        'task_id': task_id,
-                        'stage': 'review',
-                        'task': task,
-                        'is_legacy': False
-                    }
-
-                # Stage 4: validation（新增：满意度验证阶段）
-                validation_config = task.get('validation', {})
-                if validation_config.get('enabled', False):
-                    if not stages.get('validation', {}).get('completed', False):
-                        return {
-                            'task_id': task_id,
-                            'stage': 'validation',
-                            'task': task,
-                            'is_legacy': False
-                        }
-
-        # No pending stages
-        # Report blocked tasks if any
-        if blocked_tasks:
-            info("\n# 部分任务因依赖未满足而被跳过:", file=sys.stderr)
-            for bt in blocked_tasks:
-                blocked_parts = []
-                for b in bt['blocked_by']:
-                    if isinstance(b, dict):
-                        blocked_id = b.get('id', 'unknown')
-                        blocked_reason = b.get('reason', '')
-                        if blocked_reason:
-                            blocked_parts.append(f"{blocked_id} ({blocked_reason})")
-                        else:
-                            blocked_parts.append(blocked_id)
-                    else:
-                        blocked_parts.append(str(b))
-                blocked_by_str = ', '.join(blocked_parts)
-                info(f"#   {bt['task_id']} 等待: {blocked_by_str}", file=sys.stderr)
-            info("", file=sys.stderr)
-
-        return None
-
-    except FileNotFoundError:
-        error(f"task.json not found", file=sys.stderr)
-        sys.exit(2)
-    except json.JSONDecodeError as e:
-        error(f"Invalid JSON in task.json: {e}", file=sys.stderr)
-        sys.exit(2)
-
-
-def main():
-    next_stage = get_next_pending_stage()
-
-    if next_stage is None:
-        # 检查是否所有任务都完成了
-        data = load_tasks()
-
-        has_pending = False
-        for task in data.get('tasks', []):
-            if 'stages' in task:
-                # 检查标准阶段
-                dev_test_review_complete = all([
-                    task['stages']['dev']['completed'],
-                    task['stages']['test']['completed'],
-                    task['stages']['review']['completed']
-                ])
-
-                # 检查 validation 阶段（如果启用）
-                validation_config = task.get('validation', {})
-                validation_complete = True
-                if validation_config.get('enabled', False):
-                    validation_complete = task['stages'].get('validation', {}).get('completed', False)
-
-                if not dev_test_review_complete or not validation_complete:
-                    has_pending = True
-                    break
-            else:
-                if not task.get('passes', False):
-                    has_pending = True
-                    break
-
-        if has_pending:
-            # 有未完成的阶段，但都被跳过了
-            info("# All pending stages are skipped", file=sys.stderr)
-            info("# No valid stages remaining to process", file=sys.stderr)
-            sys.exit(1)
+        if result.returncode == 0:
+            # 标记所有阶段完成
+            storage.complete_task(task_id)
+            return True
         else:
-            info("# All stages completed")
-        sys.exit(1)
+            app_logger.warning(f"验证失败 (exit={result.returncode}): {result.stdout[:200]}")
+            return False
 
-    # Output in a prompt-friendly format
-    task = next_stage['task']
-    task_id = next_stage['task_id']
-    stage = next_stage['stage']
-
-    info(f"## Current Task & Stage")
-    info(f"**Task ID:** {task_id}")
-    info(f"**Current Stage:** {stage.upper()}")
-    info(f"**Category:** {task.get('category', 'general')}")
-    info(f"**Description:** {task['description']}")
-
-    # 显示依赖信息（新增）
-    depends_on = task.get('depends_on', [])
-    if depends_on:
-        dep_parts = []
-        for dep in depends_on:
-            if isinstance(dep, dict):
-                dep_id = dep.get('id') or dep.get('task_id', 'unknown')
-                dep_reason = dep.get('reason', '')
-                if dep_reason:
-                    dep_parts.append(f"{dep_id} ({dep_reason})")
-                else:
-                    dep_parts.append(dep_id)
-            else:
-                dep_parts.append(str(dep))
-        info(f"**Dependencies:** {', '.join(dep_parts)} (已完成)")
-
-        # 显示上下文注入信息
-        context = get_task_context(task_id, task, _get_storage())
-        if context['dependent_artifacts'] or context['dependent_decisions']:
-            info("")
-            info(f"**Context from Dependencies:**")
-            if context['dependent_artifacts']:
-                info(f"  可用产出文件:")
-                for artifact in context['dependent_artifacts']:
-                    info(f"    - {artifact}")
-            if context['dependent_decisions']:
-                info(f"  关键决策记录:")
-                for dec in context['dependent_decisions']:
-                    reason_str = f" ({dec['reason']})" if dec['reason'] else ""
-                    info(f"    - {dec['from']}{reason_str}: {dec['notes'][:100]}{'...' if len(dec['notes']) > 100 else ''}")
-
-    info("")
-
-    # Stage-specific information
-    if stage == 'dev':
-        info(f"**Stage Goal:** 实现功能（不要求完美）")
-        info(f"**Next Stage:** test")
-    elif stage == 'test':
-        info(f"**Stage Goal:** 测试并发现问题")
-        info(f"**Next Stage:** review")
-
-        # Show artifacts from dev stage
-        info(f"**Artifacts to Test:**")
-        artifacts = get_task_artifacts(task_id)
-        if artifacts:
-            for artifact in artifacts:
-                info(f"  - {artifact}")
-        else:
-            info(f"  (暂无产出记录)")
-    elif stage == 'review':
-        info(f"**Stage Goal:** 代码审查和质量评估")
-        info(f"**Next Stage:** complete")
-
-        # Show artifacts
-        info(f"**Artifacts to Review:**")
-        artifacts = get_task_artifacts(task_id)
-        if artifacts:
-            for artifact in artifacts:
-                info(f"  - {artifact}")
-        else:
-            info(f"  (暂无产出记录)")
-
-        # Show test results
-        if 'stages' in task and task['stages']['test'].get('test_results'):
-            info(f"**Test Results:**")
-            for test_name, result in task['stages']['test']['test_results'].items():
-                status = "[OK]" if result.get('passed') else "[FAIL]"
-                info(f"  {status} {test_name}: {result.get('message', 'N/A')}")
-
-    elif stage == 'validation':
-        info(f"**Stage Goal:** Satisfaction Validation - Claude 独立评估实现是否满足要求")
-        info(f"**Next Stage:** complete")
-
-        # Show validation config
-        validation_config = task.get('validation', {})
-        if validation_config.get('enabled', False):
-            info(f"**Validation Config:**")
-            info(f"   Threshold: {validation_config.get('threshold', 0.8)}")
-            info(f"   Max Retries: {validation_config.get('max_retries', 3)}")
-
-        # Show artifacts for review
-        info(f"**Artifacts to Validate:**")
-        artifacts = get_task_artifacts(task_id)
-        if artifacts:
-            for artifact in artifacts:
-                info(f"  - {artifact}")
-        else:
-            info(f"  (暂无产出记录)")
-
-
-    info("")
-
-    # 显示当前阶段的问题（被打回重修时）
-    if 'stages' in task and stage in task['stages']:
-        issues = task['stages'][stage].get('issues', [])
-        if issues:
-            info(f"之前执行失败，被打回重修！需要解决以下问题:")
-            for i, issue in enumerate(issues, 1):
-                info(f"  {i}. {issue}")
-            info("")
-
-    # Show previous stage issues if any（兼容逻辑）
-    if stage in ['test', 'review'] and 'stages' in task:
-        prev_stage = 'dev' if stage == 'test' else 'test'
-        prev_issues = task['stages'][prev_stage].get('issues', [])
-        # 只有当前阶段没有问题时，才显示前一阶段的问题
-        if not issues and prev_issues:
-            info(f"Issues from {prev_stage.upper()} stage:")
-            for i, issue in enumerate(prev_issues, 1):
-                info(f"  {i}. {issue}")
-            info("")
-
-    info(f"**Acceptance Criteria:**")
-    for i, criterion in enumerate(task.get('acceptance', []), 1):
-        info(f"  {i}. {criterion}")
-    info("")
-
-    return 0
-
-
-def get_task_artifacts(task_id):
-    """获取任务的产出清单"""
-    try:
-        artifacts_dir = os.path.join(os.path.dirname(__file__), '..', 'artifacts')
-        artifact_file = os.path.join(artifacts_dir, f'{task_id}.json')
-
-        if not os.path.exists(artifact_file):
-            return []
-
-        with open(artifact_file, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-
-        return data.get('files', [])
-    except:
-        return []
-
-
-def get_task_context(task_id, task, storage=None):
-    """
-    获取任务的上下文信息（从依赖任务的产出中提取）
-
-    Args:
-        task_id: 任务 ID
-        task: 任务字典
-        storage: TaskFileStorage 实例（可选）
-
-    Returns:
-        dict: 上下文信息，包含：
-            - dependent_artifacts: 依赖任务的产出文件列表
-            - dependent_decisions: 依赖任务的关键决策（从 notes 中提取）
-    """
-    depends_on = task.get('depends_on', [])
-
-    if not depends_on:
-        return {"dependent_artifacts": [], "dependent_decisions": []}
-
-    artifacts = []
-    decisions = []
-
-    for dep in depends_on:
-        # 支持两种格式
-        if isinstance(dep, dict):
-            dep_id = dep.get('id') or dep.get('task_id')
-            dep_reason = dep.get('reason', '')
-        else:
-            dep_id = dep
-            dep_reason = ''
-
-        # 获取依赖任务的产出
-        dep_artifacts = get_task_artifacts(dep_id)
-        if dep_artifacts:
-            artifacts.extend(dep_artifacts)
-
-        # 获取依赖任务的决策（从任务 notes 中提取）
-        try:
-            if storage is not None:
-                dep_task = storage.load_task(dep_id)
-            else:
-                data = load_tasks()
-                dep_task = None
-                for t in data.get('tasks', []):
-                    if t['id'] == dep_id:
-                        dep_task = t
-                        break
-
-            if dep_task and dep_task.get('notes'):
-                decisions.append({
-                    "from": dep_id,
-                    "reason": dep_reason,
-                    "notes": dep_task['notes']
-                })
-        except:
-            pass
-
-    return {
-        "dependent_artifacts": artifacts,
-        "dependent_decisions": decisions
-    }
-
-
-if __name__ == '__main__':
-    try:
-        sys.exit(main())
+    except subprocess.TimeoutExpired:
+        app_logger.warning(f"验证任务超时 (10min)")
+        return False
     except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc()
-        sys.exit(2)
+        app_logger.warning(f"验证任务异常: {e}")
+        return False
+
+
+def _mark_skipped(task_id: str, skip_dir: Path) -> None:
+    """标记任务为永久跳过"""
+    skip_dir.mkdir(parents=True, exist_ok=True)
+    (skip_dir / task_id).write_text(
+        f"自动执行失败于 {datetime.now().isoformat()}\n",
+        encoding="utf-8",
+    )
