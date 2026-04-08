@@ -49,7 +49,6 @@ _scripts_dir = Path(__file__).parent.resolve()
 sys.path.insert(0, str(_scripts_dir.parent))
 
 from scripts.config import (
-    ENGINE_ROOT,
     PROJECT_ROOT,
     HARNESS_DIR,
     LOG_DIR,
@@ -394,20 +393,6 @@ class AutomationEngine:
             "and constraints when implementing the current task.\n"
         )
         return header + "\n\n---\n\n".join(sections)
-
-        # 2. 阶段模板
-        template = TEMPLATES_DIR / f"{stage}_prompt.md"
-        if template.exists():
-            tpl = template.read_text(encoding="utf-8", errors="replace")
-            tpl = tpl.replace("{TASK_ID}", task_id)
-            parts.append(tpl)
-
-        # 3. 任务上下文
-        ctx = self._build_task_context(task_id, stage)
-        if ctx:
-            parts.append(ctx)
-
-        return "\n\n".join(parts)
 
     def _build_task_context(self, task_id: str, stage: str) -> str:
         """构建任务上下文（供 Agent 理解当前任务状态）"""

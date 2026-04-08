@@ -145,11 +145,12 @@ python .harness/scripts/run_automation.py --once -v
 
 ```
 Prompt 注入顺序:
-0. [PROJECT GLOBAL CONVENTIONS]  ← project-config.json
-1. CLAUDE.md
+0.  [SYSTEM DIRECTORY CONTEXT]  ← 工作区路径 + 引擎路径
+0.5 [PROJECT GLOBAL CONVENTIONS] ← project-config.json
+1.  CLAUDE.md
 1.5 [DEPENDENCY CONTEXT]         ← 前置任务的产出
-2. {stage}_prompt.md
-3. Task Context
+2.  {stage}_prompt.md
+3.  Task Context
 ```
 
 ### 优先级与依赖调度
@@ -298,12 +299,45 @@ python .harness/scripts/reset_harness.py
 
 ---
 
+## 工作区隔离（Phase 6）
+
+引擎（控制面）与业务代码（数据面）通过 `PROJECT_ROOT` 彻底隔离：
+
+```
+引擎目录 (ENGINE_ROOT)          ← .harness/、.git、README 等
+├── .harness/                   ← HARNESS_DIR: 引擎核心资产（永远不动）
+│   ├── tasks/                  ← 任务存储
+│   ├── knowledge/              ← 知识库
+│   ├── artifacts/              ← 产出记录
+│   ├── logs/                   ← 运行日志
+│   └── cli-io/                 ← 会话管理
+└── sandbox/                    ← PROJECT_ROOT (默认): Agent 写代码的地方
+
+配置外部工作区后:
+├── .harness/                   ← 引擎资产
+└── /path/to/laravel/           ← PROJECT_ROOT: Agent 在真实项目中写代码
+```
+
+配置 `.harness/.env`：
+
+| 配置 | 默认值 | 说明 |
+|------|--------|------|
+| `TARGET_WORKSPACE` | `sandbox/` | Agent 读写业务代码的绝对路径 |
+
+- 未配置或路径不存在时自动回退到 `sandbox/`
+- `project-config.json` 先在工作区查找，找不到回退到引擎根目录
+- `DualTimeoutExecutor` 的子进程 `cwd` 严格指向 `PROJECT_ROOT`
+- Agent Prompt 顶部注入 `[SYSTEM DIRECTORY CONTEXT]` 明确告知工作路径
+
+---
+
 ## 配置项
 
 编辑 `.harness/.env`：
 
 | 配置 | 默认值 | 说明 |
 |------|--------|------|
+| `TARGET_WORKSPACE` | sandbox/ | 业务代码工作区绝对路径 |
 | `CLAUDE_CMD` | claude | Claude CLI 命令 |
 | `PERMISSION_MODE` | bypassPermissions | 权限模式 |
 | `MAX_RETRIES` | 3 | 最大逻辑重试次数 |
@@ -336,11 +370,12 @@ python .harness/scripts/reset_harness.py
 ├─────────────────────────────────────────────────────────────┤
 │  1. run_automation.py 主循环启动                             │
 │  2. next_stage.py → P0~P3 优先级排序 + 依赖阻断             │
-│  3. 组装 Prompt                                             │
-│     a. project-config.json → [PROJECT GLOBAL CONVENTIONS]   │
-│     b. CLAUDE.md                                            │
-│     c. _build_dependency_context() → [DEPENDENCY CONTEXT]   │
-│     d. {stage}_prompt.md + 任务上下文                        │
+│  3. 组装 Prompt (cwd=PROJECT_ROOT)                           │
+│     a. [SYSTEM DIRECTORY CONTEXT] → 工作区 + 引擎路径          │
+│     b. project-config.json → [PROJECT GLOBAL CONVENTIONS]   │
+│     c. CLAUDE.md                                            │
+│     d. _build_dependency_context() → [DEPENDENCY CONTEXT]   │
+│     e. {stage}_prompt.md + 任务上下文                        │
 │  4. dual_timeout.py → 调用 Claude Code CLI                  │
 │     - Unix: PTY (pty/fcntl/select)                          │
 │     - Windows: threading + subprocess                       │
