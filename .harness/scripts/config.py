@@ -71,15 +71,17 @@ try:
         print(f"[Config] Loaded {loaded_count} .env file(s)")
 
 except ImportError:
-    # Windows UTF-8 修复
-    import sys
-    if sys.platform == 'win32':
-        try:
-            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-        except:
-            pass
-    print("WARNING: python-dotenv not installed, using default values")
-    print("   Install: pip install -r .harness/requirements.txt")
+    # 后备：手动解析 .env 文件
+    for _env_path in [HARNESS_DIR / ".env", ENGINE_ROOT / ".env"]:
+        if _env_path.exists():
+            for line in _env_path.read_text(encoding='utf-8', errors='replace').splitlines():
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if '=' in line:
+                    key, _, value = line.partition('=')
+                    os.environ.setdefault(key.strip(), value.strip())
+    print("WARNING: python-dotenv not installed, using manual .env parsing")
 
 
 # ==========================================
@@ -166,10 +168,10 @@ PYTHON_CMD = _get_str("PYTHON_CMD", sys.executable)
 """Python 解释器路径"""
 
 # --- 超时配置 ---
-BASE_SILENCE_TIMEOUT = _get_int("BASE_SILENCE_TIMEOUT", 60)
+BASE_SILENCE_TIMEOUT = _get_int("BASE_SILENCE_TIMEOUT", 300)
 """基础活性超时（秒）- 无输出检测"""
 
-MAX_SILENCE_TIMEOUT = _get_int("MAX_SILENCE_TIMEOUT", 180)
+MAX_SILENCE_TIMEOUT = _get_int("MAX_SILENCE_TIMEOUT", 600)
 """最大活性超时（秒）- 防止无限递增"""
 
 TIMEOUT_BACKOFF_FACTOR = _get_float("TIMEOUT_BACKOFF_FACTOR", 1.3)

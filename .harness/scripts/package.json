@@ -1,0 +1,8 @@
+{
+  "name": "harness-bridge",
+  "version": "1.0.0",
+  "description": "TTY Bridge for Claude CLI",
+  "dependencies": {
+    "node-pty": "^1.0.0"
+  }
+}

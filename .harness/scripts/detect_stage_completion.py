@@ -6,10 +6,10 @@
 
 基于原 detect_stage_completion.py 重写，接入 Phase 1 基座。
 
-混合检测模式：
-- Dev: mark-stage 调用 / Git 变更 / 产出记录
-- Test: --test-results 调用 / 测试执行痕迹 / 测试文件创建
-- Review: --issues 调用 / 审查关键词 / 完成状态文本
+防御性检测顺序（绝对真理链）：
+1. TaskStorage.is_stage_complete() → 物理 JSON 状态（最高优先级）
+2. CLI 会话日志中的 mark-stage 输出
+3. Git 变更检测（兜底）
 
 退出码:
     0 - 阶段已完成
@@ -43,10 +43,11 @@ from scripts.config import (
     ARTIFACTS_DIR,
 )
 from scripts.logger import app_logger
+from scripts.task_storage import TaskStorage
 
 
 class DetectStageCompletion:
-    """混合模式阶段完成检测器"""
+    """混合模式阶段完成检测器（防御性设计）"""
 
     RECENT_SESSIONS_COUNT = 5
 
@@ -59,6 +60,7 @@ class DetectStageCompletion:
         self.task_id = task_id
         self.stage = stage.lower()
         self._cli_sessions_dir = CLI_IO_DIR / "sessions"
+        self._storage = TaskStorage()
 
     # --------------------------------------------------
     #  公开接口
@@ -92,33 +94,42 @@ class DetectStageCompletion:
 
     def _check_dev(self) -> tuple:
         """
-        Dev 完成条件（满足任一）:
-        1. mark-stage 调用
-        2. Git 变更
-        3. 产出记录
+        Dev 完成条件（防御性检测链）：
+
+        第一道防线：TaskStorage 物理状态（绝对真理）
+        第二道防线：CLI 会话日志中 mark-stage 输出
+        第三道防线：Git 变更检测
         """
+        # 第一道防线：TaskStorage 绝对真理
+        if self._storage.is_stage_complete(self.task_id, "dev"):
+            app_logger.debug(f"[第一防线] TaskStorage 确认 dev 完成: {self.task_id}")
+            return 0, "Dev 完成 (TaskStorage 物理状态确认)"
+
+        # 第二道防线：CLI 会话日志
         sessions = self._get_recent_sessions()
-
-        mark_called = False
         for f in sessions:
-            if self._detect_cli_params(self._load_output(f)).get("mark_stage_called"):
-                mark_called = True
-                break
+            output = self._load_output(f)
+            params = self._detect_cli_params(output)
+            if params["mark_stage_called"]:
+                # 再次验证 TaskStorage（可能有时延）
+                if self._storage.is_stage_complete(self.task_id, "dev"):
+                    return 0, "Dev 完成 (TaskStorage 确认 + mark-stage 日志)"
+                return 0, "Dev 完成 (mark-stage 调用日志)"
 
+        # 第三道防线：Git 变更 + 产出记录（兜底）
         git_detected, git_detail = self._detect_git_changes()
         has_artifacts = self._has_artifacts()
 
         conditions = []
-        if mark_called:
-            conditions.append("mark-stage 主动调用")
         if git_detected:
             conditions.append(f"Git 变更 ({git_detail})")
         if has_artifacts:
             conditions.append("产出记录存在")
 
         if conditions:
-            return 0, f"Dev 完成: {'; '.join(conditions)}"
-        return 1, "Dev 未完成: 未检测到 mark-stage / Git 变更 / 产出记录"
+            return 0, f"Dev 完成 (兜底检测): {'; '.join(conditions)}"
+
+        return 1, "Dev 未完成: 无物理状态确认 / mark-stage 痕迹 / Git 变更"
 
     # --------------------------------------------------
     #  Test 阶段检测
@@ -126,14 +137,19 @@ class DetectStageCompletion:
 
     def _check_test(self) -> tuple:
         """
-        Test 完成条件（满足 2 项）:
-        1. --test-results 调用
-        2. --issues 调用
-        3. 测试执行痕迹
-        4. 测试文件创建
-        """
-        sessions = self._get_recent_sessions()
+        Test 完成条件（防御性检测链）：
 
+        第一道防线：TaskStorage 物理状态（绝对真理）
+        第二道防线：CLI 会话日志中 --test-results / --issues / 测试执行痕迹
+        第三道防线：测试文件创建（兜底）
+        """
+        # 第一道防线：TaskStorage 绝对真理
+        if self._storage.is_stage_complete(self.task_id, "test"):
+            app_logger.debug(f"[第一防线] TaskStorage 确认 test 完成: {self.task_id}")
+            return 0, "Test 完成 (TaskStorage 物理状态确认)"
+
+        # 第二道防线：CLI 会话日志
+        sessions = self._get_recent_sessions()
         has_test_results = False
         has_issues = False
         has_test_exec = False
@@ -160,11 +176,18 @@ class DetectStageCompletion:
         if has_test_exec: labels.append("测试执行痕迹")
         if has_test_files: labels.append("测试文件创建")
 
-        if score >= 2:
-            return 0, f"Test 完成: {score} 项 - {'; '.join(labels)}"
-        if score == 1:
-            return 2, f"Test 不确定: 仅 1 项 - {'; '.join(labels)}"
-        return 1, "Test 未完成: 无测试痕迹"
+        # 第二道防线至少满足 1 项
+        if score >= 1:
+            # 再次验证 TaskStorage
+            if self._storage.is_stage_complete(self.task_id, "test"):
+                return 0, f"Test 完成 (TaskStorage 确认 + {score} 项日志证据)"
+            return 0, f"Test 完成 (日志证据): {score} 项 - {'; '.join(labels)}"
+
+        # 第三道防线：测试文件创建（弱兜底）
+        if has_test_files:
+            return 0, "Test 完成 (兜底: 测试文件创建)"
+
+        return 1, "Test 未完成: 无物理状态确认 / 测试痕迹"
 
     # --------------------------------------------------
     #  Review 阶段检测
@@ -172,14 +195,19 @@ class DetectStageCompletion:
 
     def _check_review(self) -> tuple:
         """
-        Review 完成条件（满足 2 项）:
-        1. --issues 调用
-        2. --test-results 调用
-        3. 审查关键词匹配
-        4. 完成状态文本匹配
-        """
-        sessions = self._get_recent_sessions()
+        Review 完成条件（防御性检测链）：
 
+        第一道防线：TaskStorage 物理状态（绝对真理）
+        第二道防线：CLI 会话日志中 --issues / 审查关键词 / 完成文本
+        第三道防线：无（Review 阶段必须有明确证据）
+        """
+        # 第一道防线：TaskStorage 绝对真理
+        if self._storage.is_stage_complete(self.task_id, "review"):
+            app_logger.debug(f"[第一防线] TaskStorage 确认 review 完成: {self.task_id}")
+            return 0, "Review 完成 (TaskStorage 物理状态确认)"
+
+        # 第二道防线：CLI 会话日志
+        sessions = self._get_recent_sessions()
         has_issues = False
         has_test_results = False
         review_kw_count = 0
@@ -225,11 +253,14 @@ class DetectStageCompletion:
         if has_completion_text:
             score += 1; labels.append("完成文本匹配")
 
-        if score >= 2:
-            return 0, f"Review 完成: {score} 项 - {'; '.join(labels)}"
-        if score == 1:
-            return 2, f"Review 不确定: 仅 1 项 - {'; '.join(labels)}"
-        return 1, "Review 未完成: 无审查痕迹"
+        # 第二道防线至少满足 1 项
+        if score >= 1:
+            # 再次验证 TaskStorage
+            if self._storage.is_stage_complete(self.task_id, "review"):
+                return 0, f"Review 完成 (TaskStorage 确认 + {score} 项日志证据)"
+            return 0, f"Review 完成 (日志证据): {score} 项 - {'; '.join(labels)}"
+
+        return 1, "Review 未完成: 无物理状态确认 / 审查痕迹"
 
     # --------------------------------------------------
     #  检测辅助方法

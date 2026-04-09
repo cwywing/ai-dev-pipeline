@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-双重超时机制执行器 - 跨平台统一抽象层
+双重超时机制执行器 - Node.js 桥接架构
 ====================================
 
-屏蔽 Unix (pty) 与 Windows (threading) 的底层差异，
-对外暴露统一的 execute() 接口。
+通过 Node.js 桥接层 (runner.js) 统一所有平台的 Claude CLI 调用，
+解决 Windows 下的缓冲/编码/命令行长度限制问题。
+
+架构:
+    Python (DualTimeoutExecutor)
+        → 写入 prompt 到临时文件
+        → 启动 node runner.js (stdin pipe 桥接)
+        → 后台线程实时读取 stdout (流式输出)
+        → 活性超时 / 硬超时 / 正常退出
 
 退出码约定:
-    0    - 正常退出（由子进程返回）
+    0    - 正常退出
     14   - 活性超时（SILENCE_TIMEOUT 无输出）
     124  - 硬超时（HARD_TIMEOUT 上限）
     1    - 启动失败 / 其他异常
@@ -24,30 +31,66 @@
 
 import os
 import platform
-import shutil
 import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import List, Optional
 
 
 # 路径注入
-from pathlib import Path
 _sys_init_dir = Path(__file__).parent.resolve()
 sys.path.insert(0, str(_sys_init_dir.parent))
 
+from scripts.config import CLI_IO_DIR
 from scripts.logger import app_logger
 
-_IS_WINDOWS = platform.system() == "Windows"
+
+# ========================================
+#  Runner.js 路径
+# ========================================
+
+RUNNER_JS = _sys_init_dir / "runner.js"
+
+
+def _check_runner_available() -> bool:
+    """检查 runner.js 和 node 是否可用"""
+    if not RUNNER_JS.exists():
+        return False
+    # 检查 node 是否可用
+    try:
+        result = subprocess.run(
+            ["node", "--version"],
+            capture_output=True, timeout=5
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+_RUNNER_AVAILABLE = None
+
+
+def is_runner_available() -> bool:
+    """延迟检测 runner 可用性（带缓存）"""
+    global _RUNNER_AVAILABLE
+    if _RUNNER_AVAILABLE is None:
+        _RUNNER_AVAILABLE = _check_runner_available()
+    return _RUNNER_AVAILABLE
 
 
 # ========================================
-#  Unix 实现 (PTY)
+#  统一执行器 (Node.js stdin pipe 桥接)
 # ========================================
 
-class _UnixExecutor:
-    """基于伪终端的执行器（Linux / macOS）"""
+class _BridgeExecutor:
+    """
+    通过 runner.js 执行 Claude CLI
+
+    runner.js 使用 child_process.spawn + stdin pipe 传入 prompt，
+    避开 Windows 命令行长度限制（~8191 字符）。
+    """
 
     def __init__(self, cwd: Optional[Path] = None):
         self.cwd = cwd
@@ -55,243 +98,125 @@ class _UnixExecutor:
     def execute(self, cmd: list, input_content: str,
                 hard_timeout: int, silence_timeout: int,
                 verbose: bool = False) -> int:
-        import pty
-        import fcntl
-        import select
+        """
+        通过 Node.js 桥接层执行 Claude CLI
 
-        master_fd, slave_fd = pty.openpty()
-        input_bytes = input_content.encode("utf-8") if input_content else b""
-        proc = None
+        Args:
+            cmd: 原始命令列表（仅用于日志，实际由 runner.js 构建）
+            input_content: Prompt 文本
+            hard_timeout: 硬超时上限（秒）
+            silence_timeout: 活性超时（秒）
+            verbose: 调试日志
 
+        Returns:
+            退出码 (0 / 14 / 124 / 1)
+        """
+        # 1. 写入 prompt 到临时文件
+        prompt_file = CLI_IO_DIR / "current_prompt.md"
         try:
-            proc = subprocess.Popen(
-                cmd, stdin=subprocess.PIPE,
-                stdout=slave_fd, stderr=slave_fd,
-                cwd=str(self.cwd) if self.cwd else None,
-                text=False, close_fds=False,
-            )
-            os.close(slave_fd)
-
-            flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
-            fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
-
+            prompt_file.write_text(input_content, encoding="utf-8")
         except Exception as e:
-            # 确保 fd 资源不泄露
-            try:
-                os.close(master_fd)
-            except OSError:
-                pass
-            try:
-                os.close(slave_fd)
-            except OSError:
-                pass
-            if proc:
-                try:
-                    proc.kill()
-                    proc.wait(timeout=2)
-                except Exception:
-                    pass
-            app_logger.error(f"PTY 启动失败: {e}")
+            app_logger.error(f"写入 prompt 文件失败: {e}")
             return 1
 
-        last_output_time = [time.time()]
-        start_time = time.time()
+        # 2. 构建命令：node runner.js <prompt_file>
+        bridge_cmd = [
+            "node",
+            str(RUNNER_JS),
+            str(prompt_file),
+        ]
 
-        def write_input():
-            try:
-                if input_bytes:
-                    proc.stdin.write(input_bytes)
-                    proc.stdin.close()
-            except OSError:
-                pass
-
-        threading.Thread(target=write_input, daemon=True).start()
-
-        try:
-            while True:
-                if proc.poll() is not None:
-                    # 进程结束，排空剩余输出
-                    try:
-                        while True:
-                            chunk = os.read(master_fd, 4096)
-                            if not chunk:
-                                break
-                            print(chunk.decode("utf-8", errors="replace"), end="")
-                    except OSError:
-                        pass
-                    break
-
-                readable, _, _ = select.select([master_fd], [], [], 0.1)
-
-                if master_fd in readable:
-                    try:
-                        chunk = os.read(master_fd, 4096)
-                        if chunk:
-                            print(chunk.decode("utf-8", errors="replace"), end="")
-                            last_output_time[0] = time.time()
-                        else:
-                            break
-                    except OSError:
-                        break
-
-                now = time.time()
-                elapsed = now - start_time
-                silence = now - last_output_time[0]
-
-                if silence > silence_timeout:
-                    self._terminate(proc)
-                    app_logger.warning(
-                        f"Agent 卡死 ({silence_timeout}s 无输出)")
-                    return 14
-
-                if elapsed > hard_timeout:
-                    self._kill(proc)
-                    app_logger.warning(
-                        f"Agent 硬超时 (超过 {hard_timeout}s)")
-                    return 124
-
-                time.sleep(0.05)
-
-        except KeyboardInterrupt:
-            self._kill(proc)
-            raise
-
-        finally:
-            try:
-                os.close(master_fd)
-            except OSError:
-                pass
-
-        return proc.returncode
-
-    @staticmethod
-    def _terminate(proc):
-        try:
-            proc.terminate()
-            proc.wait(timeout=3)
-        except Exception:
-            proc.kill()
-
-    @staticmethod
-    def _kill(proc):
-        try:
-            proc.kill()
-            proc.wait(timeout=1)
-        except Exception:
-            pass
-
-
-# ========================================
-#  Windows 实现 (threading + subprocess)
-# ========================================
-
-class _WindowsExecutor:
-    """基于 threading 的执行器（Windows）"""
-
-    def __init__(self, cwd: Optional[Path] = None):
-        self.cwd = cwd
-
-    def execute(self, cmd: list, input_content: str,
-                hard_timeout: int, silence_timeout: int,
-                verbose: bool = False) -> int:
-        actual_cmd = self._resolve_cmd(cmd)
-        input_bytes = input_content.encode("utf-8", errors="surrogateescape") \
-            if input_content else b""
+        # 3. 启动子进程
+        env = os.environ.copy()
+        env.update({
+            "NO_COLOR": "1",
+            "FORCE_COLOR": "0",
+            "PYTHONUNBUFFERED": "1",
+            "CI": "true",
+        })
 
         try:
             proc = subprocess.Popen(
-                actual_cmd,
-                stdin=subprocess.PIPE,
+                bridge_cmd,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 cwd=str(self.cwd) if self.cwd else None,
-                text=False, bufsize=0,
+                env=env,
             )
+        except FileNotFoundError:
+            app_logger.error(
+                "runner.js 未找到。请确保 .harness/scripts/runner.js 存在"
+            )
+            return 1
         except Exception as e:
             app_logger.error(f"进程启动失败: {e}")
             return 1
 
+        # 4. 后台线程实时读取输出
         last_output_time = [time.time()]
-        start_time = time.time()
         output_buffer = []
         stop_event = threading.Event()
-        stdin_closed = threading.Event()
 
         def read_output():
             try:
                 while not stop_event.is_set():
-                    try:
-                        chunk = proc.stdout.read(4096)
-                        if chunk:
-                            output_buffer.append(chunk)
-                            last_output_time[0] = time.time()
-                        else:
-                            break
-                    except Exception:
+                    chunk = os.read(proc.stdout.fileno(), 4096)
+                    if chunk:
+                        output_buffer.append(chunk)
+                        last_output_time[0] = time.time()
+                        # 实时打印
+                        try:
+                            text = chunk.decode("utf-8", errors="replace")
+                            print(text, end="", flush=True)
+                        except Exception:
+                            pass
+                    else:
                         break
-                    time.sleep(0.01)
             except Exception:
                 pass
 
-        def write_input():
-            try:
-                if input_bytes:
-                    proc.stdin.write(input_bytes)
-            except OSError:
-                pass
-            finally:
-                # 无论写入成功与否，必须关闭 stdin
-                # 否则子进程可能因 stdin 管道打开而永远不退出
-                try:
-                    proc.stdin.close()
-                except Exception:
-                    pass
-                stdin_closed.set()
+        reader_thread = threading.Thread(target=read_output, daemon=True)
+        reader_thread.start()
 
-        threading.Thread(target=read_output, daemon=True).start()
-        threading.Thread(target=write_input, daemon=True).start()
-
-        flush_idx = [0]
-
-        def flush_loop():
-            while not stop_event.is_set():
-                end = len(output_buffer)
-                if end > flush_idx[0]:
-                    for i in range(flush_idx[0], end):
-                        self._safe_print(output_buffer[i])
-                    flush_idx[0] = end
-                time.sleep(0.05)
-
-        threading.Thread(target=flush_loop, daemon=True).start()
+        # 5. 主循环：超时检测
+        start_time = time.time()
+        last_heartbeat = [0.0]
 
         try:
             while True:
                 if proc.poll() is not None:
-                    # 等待 read 线程将最后的数据写入 buffer
+                    # 进程结束，等待 reader 线程排空
                     stop_event.set()
-                    time.sleep(0.2)
-                    # 排空全部残余（从 0 开始，而非 flush_idx）
-                    for chunk in output_buffer[flush_idx[0]:]:
-                        self._safe_print(chunk)
+                    reader_thread.join(timeout=1.0)
+                    app_logger.info("Agent 思考完成，输出已捕获！")
+                    # 打印残余
+                    for remaining in output_buffer:
+                        if isinstance(remaining, bytes):
+                            try:
+                                text = remaining.decode("utf-8", errors="replace")
+                                print(text, end="", flush=True)
+                            except Exception:
+                                pass
                     break
 
                 now = time.time()
                 elapsed = now - start_time
-                silence = now - last_output_time[0]
 
-                if silence > silence_timeout:
-                    stop_event.set()
-                    self._terminate(proc)
-                    app_logger.warning(
-                        f"Agent 卡死 ({silence_timeout}s 无输出)")
-                    return 14
-
+                # CI + --print 模式下 Claude CLI 在生成完毕前几乎无输出，
+                # 因此 _BridgeExecutor 不设 silence_timeout，仅靠 hard_timeout 兜底。
                 if elapsed > hard_timeout:
                     stop_event.set()
                     self._kill(proc)
                     app_logger.warning(
                         f"Agent 硬超时 (超过 {hard_timeout}s)")
                     return 124
+
+                # 心跳提示：每 15 秒打印一次
+                if elapsed - last_heartbeat[0] >= 15:
+                    last_heartbeat[0] = elapsed
+                    app_logger.info(
+                        f"Agent 正在思考中... (已耗时 {int(elapsed)}s)")
 
                 time.sleep(0.1)
 
@@ -303,35 +228,136 @@ class _WindowsExecutor:
         return proc.returncode
 
     @staticmethod
-    def _resolve_cmd(cmd: list) -> list:
-        """解析命令路径（Windows .CMD/.BAT 特殊处理）"""
-        if not cmd:
-            return cmd
-        exe = shutil.which(cmd[0])
-        if exe:
-            if exe.lower().endswith((".cmd", ".bat")):
-                return ["cmd", "/c", exe] + cmd[1:]
-            return [exe] + cmd[1:]
-        # shutil.which 未找到命令时保持原样，
-        # 让 Popen 报出明确的 FileNotFoundError
-        return cmd
-
-    @staticmethod
-    def _safe_print(chunk: bytes) -> None:
-        for enc in ("utf-8", "gbk"):
-            try:
-                print(chunk.decode(enc, errors="replace"), end="", flush=True)
-                return
-            except Exception:
-                continue
-
-    @staticmethod
-    def _terminate(proc):
+    def _kill(proc):
         try:
-            proc.terminate()
-            proc.wait(timeout=5)
-        except Exception:
             proc.kill()
+            proc.wait(timeout=2)
+        except Exception:
+            pass
+
+
+# ========================================
+#  Fallback: 原生 subprocess (无 node 时)
+# ========================================
+
+class _FallbackExecutor:
+    """
+    Fallback 执行器（无 node 时使用原生 subprocess）
+
+    使用 subprocess.communicate() 方案，
+    不支持实时输出，不支持活性超时。
+    """
+
+    def __init__(self, cwd: Optional[Path] = None):
+        self.cwd = cwd
+
+    def execute(self, cmd: list, input_content: str,
+                hard_timeout: int, silence_timeout: int,
+                verbose: bool = False) -> int:
+        app_logger.warning(
+            "Node.js 不可用，使用 Fallback 执行器"
+        )
+
+        # Windows: shutil.which 解析 .cmd 后缀
+        if platform.system() == "Windows":
+            import shutil
+            resolved = shutil.which(cmd[0])
+            if resolved:
+                cmd = [resolved] + cmd[1:]
+
+        env = os.environ.copy()
+        env.update({
+            "NO_COLOR": "1",
+            "FORCE_COLOR": "0",
+            "PYTHONUNBUFFERED": "1",
+            "CI": "true",
+        })
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                cwd=str(self.cwd) if self.cwd else None,
+                env=env,
+            )
+        except Exception as e:
+            app_logger.error(f"进程启动失败: {e}")
+            return 1
+
+        # 后台线程：写入 stdin（prompt），避免大内容阻塞主线程
+        def write_stdin():
+            try:
+                if input_content:
+                    proc.stdin.write(
+                        input_content.encode("utf-8", errors="replace")
+                    )
+                proc.stdin.close()
+            except Exception:
+                try:
+                    proc.stdin.close()
+                except Exception:
+                    pass
+
+        threading.Thread(target=write_stdin, daemon=True).start()
+
+        # 后台线程：实时读取 stdout 并打印
+        stop_event = threading.Event()
+
+        def read_output():
+            try:
+                while not stop_event.is_set():
+                    chunk = os.read(proc.stdout.fileno(), 4096)
+                    if chunk:
+                        try:
+                            text = chunk.decode("utf-8", errors="replace")
+                            print(text, end="", flush=True)
+                        except Exception:
+                            pass
+                    else:
+                        break
+            except Exception:
+                pass
+
+        reader_thread = threading.Thread(target=read_output, daemon=True)
+        reader_thread.start()
+
+        # 主循环：仅靠 hard_timeout 兜底
+        start_time = time.time()
+        last_heartbeat = [0.0]
+
+        try:
+            while True:
+                if proc.poll() is not None:
+                    stop_event.set()
+                    reader_thread.join(timeout=1.0)
+                    app_logger.info("Agent 思考完成，输出已捕获！")
+                    break
+
+                if time.time() - start_time > hard_timeout:
+                    stop_event.set()
+                    self._kill(proc)
+                    app_logger.warning(
+                        f"Agent 硬超时 (超过 {hard_timeout}s)")
+                    return 124
+
+                # 心跳提示：每 15 秒打印一次，消除黑盒等待感
+                now = time.time()
+                elapsed = now - start_time
+                if elapsed - last_heartbeat[0] >= 15:
+                    last_heartbeat[0] = elapsed
+                    app_logger.info(
+                        f"Agent 正在思考中... (已耗时 {int(elapsed)}s)")
+
+                time.sleep(0.1)
+
+        except KeyboardInterrupt:
+            stop_event.set()
+            self._kill(proc)
+            raise
+
+        return proc.returncode
 
     @staticmethod
     def _kill(proc):
@@ -350,34 +376,25 @@ class DualTimeoutExecutor:
     """
     双重超时机制执行器
 
-    自动根据运行平台选择底层实现。
+    优先使用 Node.js 桥接层（实时输出 + stdin pipe），
+    不可用时降级到 Fallback（无实时输出）。
     """
 
     def __init__(self, hard_timeout: int = 300,
                  silence_timeout: int = 120,
                  verbose: bool = False,
                  cwd: Optional[Path] = None):
-        """
-        Args:
-            hard_timeout: 硬超时上限（秒）
-            silence_timeout: 活性超时（秒），无输出则终止
-            verbose: 调试日志
-            cwd: 子进程工作目录（默认为 PROJECT_ROOT）
-        """
         self.hard_timeout = hard_timeout
         self.silence_timeout = silence_timeout
         self.verbose = verbose
         self.cwd = cwd
 
-        # 选择平台实现
-        if _IS_WINDOWS:
-            self._impl = _WindowsExecutor(cwd=cwd)
-            if verbose:
-                app_logger.debug("DualTimeout: 使用 Windows 实现")
+        if is_runner_available():
+            self._impl = _BridgeExecutor(cwd=cwd)
+            app_logger.info("DualTimeout: 使用 Node.js 桥接层")
         else:
-            self._impl = _UnixExecutor(cwd=cwd)
-            if verbose:
-                app_logger.debug("DualTimeout: 使用 Unix PTY 实现")
+            self._impl = _FallbackExecutor(cwd=cwd)
+            app_logger.warning("DualTimeout: Node.js 不可用，降级到 Fallback")
 
     def execute(self, cmd: List[str], input_content: str) -> int:
         """
@@ -385,7 +402,7 @@ class DualTimeoutExecutor:
 
         Args:
             cmd: 命令及参数列表
-            input_content: 通过 stdin 传入的内容
+            input_content: Prompt 文本
 
         Returns:
             退出码 (0 / 14 / 124 / 1)

@@ -84,6 +84,10 @@ Desktop.ini
 # CLI sessions
 .harness/cli-io/sessions/
 
+# CLI runtime state (prompt file, current task json)
+.harness/cli-io/current_prompt.md
+.harness/cli-io/current.json
+
 # Logs
 .harness/logs/
 *.log
@@ -125,7 +129,5 @@ coverage.xml
 # pyenv
 .python-version
 
-# Backup files
-*.backup
-*.bak
-*.old
+# Windows NUL device artifacts
+nul
