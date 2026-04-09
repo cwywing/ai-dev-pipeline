@@ -18,6 +18,7 @@ AI Dev Pipeline is an intelligent automation framework that leverages AI agents 
 - **Intelligent Initialization**: Auto-detects project tech stack, generates configurations
 - **Flexible Task Management**: JSON-based task storage with acceptance criteria
 - **Timeout & Retry Handling**: Robust error handling with exponential backoff
+- **Node.js Bridge**: Cross-platform CLI invocation via stdin pipe, bypassing Windows command line length limits
 - **Git Integration**: Automatic commits after each successful stage
 
 ### Bug Detection Rate
@@ -33,6 +34,7 @@ AI Dev Pipeline (3 stages): **~90%**
 ### Prerequisites
 
 - Python 3.7+
+- Node.js 18+ (required for the CLI bridge layer)
 - Claude CLI (`claude` command available)
 - Git
 
@@ -55,6 +57,9 @@ cd /path/to/your/project
 ```bash
 # Copy environment configuration
 cp .harness/.env.example .harness/.env
+
+# Install Node.js bridge dependencies
+cd .harness/scripts && npm install && cd ../../..
 ```
 
 3. **Initialize the system**
@@ -85,11 +90,7 @@ python3 .harness/scripts/add_task.py \
 4. **Run automation**
 
 ```bash
-# Linux/macOS
-./.harness/run-automation.sh
-
-# Windows
-python .harness/windows/run-automation-stages.py
+python .harness/scripts/run_automation.py -v
 ```
 
 ---
@@ -110,13 +111,13 @@ python .harness/windows/run-automation-stages.py
 ┌──────────────────────────────────────────────────────┐
 │           Automation Workflow                         │
 ├──────────────────────────────────────────────────────┤
-│  1. next_stage.py → Get next pending stage           │
+│  1. run_automation.py → Get next pending stage       │
 │  2. Assemble Prompt (CLAUDE.md + Task + Template)   │
-│  3. Invoke Claude Code CLI                           │
-│  4. Agent executes and calls mark-stage              │
-│  5. Detect completion status                         │
-│  6. Success → Git commit → Next task                 │
-│     Failure → Retry (max 3) → Skip                   │
+│  3. Write prompt to file → node runner.js (bridge)  │
+│  4. runner.js spawns Claude CLI via stdin pipe      │
+│  5. Agent executes and calls mark-stage              │
+│  6. Detect completion (TaskStorage → logs → git)    │
+│  7. Success → Next task / Failure → Retry → Skip    │
 └──────────────────────────────────────────────────────┘
 ```
 
@@ -260,8 +261,8 @@ Edit `.harness/.env`:
 | `PERMISSION_MODE` | bypassPermissions | Permission mode |
 | `MAX_RETRIES` | 3 | Max retry attempts |
 | `LOOP_SLEEP` | 2 | Loop interval (seconds) |
-| `BASE_SILENCE_TIMEOUT` | 60 | Activity timeout (seconds) |
-| `MAX_SILENCE_TIMEOUT` | 180 | Max activity timeout (seconds) |
+| `BASE_SILENCE_TIMEOUT` | 300 | Base timeout (seconds) |
+| `MAX_SILENCE_TIMEOUT` | 600 | Max timeout (seconds) |
 | `TIMEOUT_BACKOFF_FACTOR` | 1.3 | Timeout backoff factor |
 | `MAX_TIMEOUT_RETRIES` | 3 | Max timeout retries |
 
@@ -270,20 +271,18 @@ Edit `.harness/.env`:
 ```bash
 # .harness/.env
 
-# Faster stuck detection
-BASE_SILENCE_TIMEOUT=60
+# Base timeout (seconds)
+BASE_SILENCE_TIMEOUT=300
 
-# Prevent long hangs
-MAX_SILENCE_TIMEOUT=180
+# Max timeout cap (seconds)
+MAX_SILENCE_TIMEOUT=600
 
 # Faster loop interval
 LOOP_SLEEP=2
 ```
 
-**Hard timeouts** (in `run-automation-stages.sh`):
-- `simple`: 300s (5 min)
-- `medium`: 480s (8 min)
-- `complex`: 600s (10 min)
+Timeouts are calculated as `min(BASE_SILENCE_TIMEOUT * stage_multiplier * backoff, MAX_SILENCE_TIMEOUT)`.
+Stage multipliers: dev=4x, test=3x, review=2x, validation=1.5x.
 
 ---
 
@@ -325,26 +324,24 @@ Modify this file to customize system behavior.
 ├── .env                         # Environment config
 ├── .env.example                 # Environment config template
 ├── .gitignore                   # Git ignore rules
-├── run-automation.sh            # Automation launcher (Linux/macOS)
 │
 ├── tasks/                       # Task storage
 │   ├── pending/                 # Pending tasks (*.json)
 │   └── completed/YYYY/MM/       # Completed tasks archive
 │
-├── scripts/                     # Automation scripts (Linux/macOS)
+├── scripts/                     # Automation scripts (unified Python + Node.js)
+│   ├── run_automation.py        # Main automation engine
+│   ├── dual_timeout.py          # Timeout executor with Node.js bridge
+│   ├── runner.js                # Node.js CLI bridge (stdin pipe)
+│   ├── package.json             # Node.js dependencies
+│   ├── config.py                # Configuration center
+│   ├── detect_stage_completion.py  # Stage completion detection
+│   ├── task_storage.py          # Task file storage
 │   ├── harness-tools.py         # Core tools (task management)
 │   ├── next_stage.py            # Next stage detection
 │   ├── add_task.py              # Create new tasks
-│   ├── knowledge.py             # Knowledge base management
-│   ├── dual_timeout.py          # Timeout control
+│   ├── logger.py                # Logging system
 │   └── ...
-│
-├── windows/                     # Windows-specific scripts
-│   ├── run-automation-stages.py # Windows automation launcher
-│   └── scripts/                 # Windows-specific script ports
-│       ├── harness-tools.py
-│       ├── add_task.py
-│       └── ...
 │
 ├── templates/                   # Agent prompt templates
 │   ├── init_prompt.md           # Initialization wizard
@@ -362,12 +359,10 @@ Modify this file to customize system behavior.
 │   ├── task_file_storage_quickstart.md
 │   └── troubleshooting.md       # Troubleshooting guide
 │
-├── logs/                        # Runtime logs
-│   └── progress.md              # Development progress
-│
-├── cli-io/                      # CLI session management
-├── artifacts/                   # Task artifacts
+├── cli-io/                      # CLI session I/O (runtime)
+├── logs/automation/             # Runtime logs
 ├── knowledge/                   # Knowledge base (contracts + constraints)
+├── artifacts/                   # Task artifacts
 └── reports/                     # Execution reports
 ```
 
@@ -510,11 +505,13 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 Harness Automation Team
 
-**Last Updated**: 2026-03
+**Last Updated**: 2026-04
 
 **Core Features**:
 - Smart tech stack detection
 - 3-stage quality assurance (Dev → Test → Review)
+- Cross-platform Node.js CLI bridge (stdin pipe)
+- TaskStorage-first stage completion detection
 - Works out of the box with any tech stack
 - LLM-driven initialization
 
@@ -535,11 +532,14 @@ Harness Automation Team
 # First time
 Say in conversation: "Help me initialize the Harness system"
 
+# Install bridge dependencies
+cd .harness/scripts && npm install && cd ../..
+
 # Create task
 python3 .harness/scripts/add_task.py --id FE_Component_001 --desc "Description"
 
 # Run automation
-./.harness/run-automation.sh
+python .harness/scripts/run_automation.py -v
 ```
 
 ### Common Commands
