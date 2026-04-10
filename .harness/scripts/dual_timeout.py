@@ -133,6 +133,7 @@ class _BridgeExecutor:
             "FORCE_COLOR": "0",
             "PYTHONUNBUFFERED": "1",
             "CI": "true",
+            "ANTHROPIC_LOG": "error",
         })
 
         try:
@@ -190,14 +191,6 @@ class _BridgeExecutor:
                     stop_event.set()
                     reader_thread.join(timeout=1.0)
                     app_logger.info("Agent 思考完成，输出已捕获！")
-                    # 打印残余
-                    for remaining in output_buffer:
-                        if isinstance(remaining, bytes):
-                            try:
-                                text = remaining.decode("utf-8", errors="replace")
-                                print(text, end="", flush=True)
-                            except Exception:
-                                pass
                     break
 
                 now = time.time()
@@ -271,6 +264,7 @@ class _FallbackExecutor:
             "FORCE_COLOR": "0",
             "PYTHONUNBUFFERED": "1",
             "CI": "true",
+            "ANTHROPIC_LOG": "error",
         })
 
         try:

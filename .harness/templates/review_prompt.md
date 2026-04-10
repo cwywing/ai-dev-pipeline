@@ -218,14 +218,26 @@ python3 .harness/scripts/harness-tools.py --action mark-stage --id {TASK_ID} --s
 python3 .harness/scripts/harness-tools.py --action mark-stage --id {TASK_ID} --stage review --status passed
 ```
 
+### ⚠️ 禁止"讨好型幻觉"（最重要规则）
+- 如果你的 Review 结论是 **"❌ 未通过"**，你 **绝对禁止** 执行 `--status completed` 命令
+- 你 **绝对禁止** 说"已成功标记为完成"、"Review 阶段已完成"等与失败结论矛盾的措辞
+- 失败就是失败，必须诚实执行 `--status failed`，不得自相矛盾
+- 如果你在报告中写了"未通过"，却在同一个回复中调用了 `--status completed`，这是 **严重事故**
+
 ### 如果发现严重问题 ❌
 ```bash
 python3 .harness/scripts/harness-tools.py --action mark-stage --id {TASK_ID} --stage review --status failed \
   --issues "问题1描述" "问题2描述"
 ```
 
+### 如果审查通过 ✅
+```bash
+python3 .harness/scripts/harness-tools.py --action mark-stage --id {TASK_ID} --stage review --status passed \
+  --issues "无"
+```
+
 ### 验证命令执行成功：
-- **必须看到输出**：`✓ Review 阶段已标记为完成`
+- **必须看到输出**：`✓ Review 阶段已标记为完成` 或 `✓ Review 阶段已标记为失败`
 - **如果没有看到此输出**：说明命令未执行，请重新执行！
 - **不要只是说"已完成"**：必须实际执行命令！
 

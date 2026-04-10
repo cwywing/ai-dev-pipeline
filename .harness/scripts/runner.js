@@ -57,6 +57,7 @@ const env = Object.assign({}, process.env, {
     PYTHONUNBUFFERED: '1',
     CI: 'true',
     NODE_NO_WARNINGS: '1',
+    ANTHROPIC_LOG: 'error',
 });
 
 // Windows 下 .cmd 文件必须通过 shell 启动
