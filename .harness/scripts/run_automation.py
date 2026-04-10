@@ -107,6 +107,14 @@ class AutomationEngine:
         self.skip_dir = HARNESS_DIR / ".automation_skip"
         self.timeout_dir = HARNESS_DIR / ".automation_timeouts"
 
+        # 📊 运行统计
+        self.stats = {
+            "tasks_completed": 0,
+            "stages_completed": 0,
+            "tasks_skipped": 0,
+            "timeout_kills": 0,
+        }
+
     # ========================================
     #  初始化
     # ========================================
@@ -694,6 +702,7 @@ class AutomationEngine:
             self.storage.mark_stage(task_id, stage)
             self.storage.clear_cache()
             self._clear_counters(task_id, stage)
+            self.stats["stages_completed"] += 1
             app_logger.success(
                 f"Stage completed: {task_id}/{stage}"
             )
@@ -706,6 +715,7 @@ class AutomationEngine:
                 count = self._increment_counter(
                     self.timeout_dir, task_id, stage
                 )
+                self.stats["timeout_kills"] += 1
                 app_logger.warning(
                     f"Timeout retry: {task_id}/{stage} "
                     f"({count}/{MAX_TIMEOUT_RETRIES})"
@@ -715,6 +725,7 @@ class AutomationEngine:
                         f"Max timeout retries: {task_id}/{stage}, skipping"
                     )
                     self._mark_skipped(task_id)
+                    self.stats["tasks_skipped"] += 1
             else:
                 count = self._increment_counter(
                     self.retry_dir, task_id, stage
@@ -728,6 +739,7 @@ class AutomationEngine:
                         f"Max retries: {task_id}/{stage}, skipping"
                     )
                     self._mark_skipped(task_id)
+                    self.stats["tasks_skipped"] += 1
 
     # ========================================
     #  知识库同步
@@ -785,6 +797,82 @@ class AutomationEngine:
         return output_text, exit_code
 
     # ========================================
+    #  任务队列统计
+    # ========================================
+
+    def _count_ready_tasks(self) -> dict:
+        """统计任务队列：ready / blocked / skipped / no_pending_stage"""
+        tasks = self.storage.load_all_pending_tasks()
+
+        skipped = set()
+        if self.skip_dir.exists():
+            skipped = {f.name for f in self.skip_dir.iterdir() if f.is_file()}
+
+        ready = 0
+        blocked = 0
+        skipped_count = len(skipped)
+
+        for task in tasks:
+            task_id = task["id"]
+            if task_id in skipped:
+                continue
+
+            # 依赖检查
+            deps_ok = True
+            for dep in task.get("depends_on", []):
+                dep_id = (dep.get("id") or dep.get("task_id")
+                          if isinstance(dep, dict) else dep)
+                if not self.storage.is_task_fully_completed(dep_id):
+                    deps_ok = False
+                    break
+
+            if not deps_ok:
+                blocked += 1
+                continue
+
+            # 检查是否有待处理阶段
+            has_pending = False
+            stages = task.get("stages", {})
+            for sn in ("dev", "test", "review"):
+                if not stages.get(sn, {}).get("completed", False):
+                    has_pending = True
+                    break
+            if not has_pending and "stages" not in task:
+                has_pending = True  # 旧格式无 stages 字段
+
+            if has_pending:
+                ready += 1
+
+        return {
+            "ready": ready,
+            "blocked": blocked,
+            "skipped": skipped_count,
+            "total": len(tasks),
+        }
+
+    def _print_run_summary(self) -> None:
+        """打印运行摘要"""
+        s = self.stats
+        pending = self.storage.load_all_pending_tasks()
+        pending_ids = {t["id"] for t in pending}
+        # 减去已完成的不在 pending 中的任务
+        completed_in_archive = len(list(
+            (TASKS_DIR / "completed").rglob("*.json")
+        ))
+
+        app_logger.info("")
+        app_logger.info("=" * 60)
+        app_logger.info("Run Summary")
+        app_logger.info("=" * 60)
+        app_logger.info(f"  Stages completed:   {s['stages_completed']}")
+        app_logger.info(f"  Tasks completed:    {s['tasks_completed']}")
+        app_logger.info(f"  Tasks skipped:      {s['tasks_skipped']}")
+        app_logger.info(f"  Timeout kills:      {s['timeout_kills']}")
+        app_logger.info(f"  Pending (in queue): {len(pending)}")
+        app_logger.info(f"  Archived total:     {completed_in_archive}")
+        app_logger.info("=" * 60)
+
+    # ========================================
     #  主循环
     # ========================================
 
@@ -803,6 +891,7 @@ class AutomationEngine:
         self.ensure_directories()
         if not self.check_prerequisites():
             app_logger.error("Prerequisites check failed")
+            self._print_run_summary()
             return 1
 
         app_logger.info(f"Project:   {PROJECT_ROOT}")
@@ -810,6 +899,14 @@ class AutomationEngine:
         app_logger.info(f"Timeout:   base={BASE_SILENCE_TIMEOUT}s, "
                        f"max={MAX_SILENCE_TIMEOUT}s, "
                        f"backoff=x{TIMEOUT_BACKOFF_FACTOR}")
+        # 🔑 配置指纹 - 快速验证配置是否正确加载
+        import hashlib as _hl
+        _cfg_fp = _hl.md5(
+            f"{BASE_SILENCE_TIMEOUT}:{MAX_SILENCE_TIMEOUT}:"
+            f"{TIMEOUT_BACKOFF_FACTOR}:{MAX_RETRIES}:{MAX_TIMEOUT_RETRIES}".encode()
+        ).hexdigest()[:8]
+        app_logger.info(f"Config ID:  {_cfg_fp} "
+                       f"(base={BASE_SILENCE_TIMEOUT}s, max={MAX_SILENCE_TIMEOUT}s)")
         app_logger.info(f"Mode:      {'single-run' if self.single_run else 'continuous'}")
 
         # 项目配置状态
@@ -822,6 +919,20 @@ class AutomationEngine:
                            f"framework={proj_fw or '(empty)'})")
         else:
             app_logger.info("Config:    project-config.json not configured")
+
+        # 📋 任务队列概览
+        queue_info = self._count_ready_tasks()
+        app_logger.info("")
+        app_logger.info(f"Task Queue: {queue_info['total']} total, "
+                       f"ready={queue_info['ready']}, "
+                       f"blocked={queue_info['blocked']}, "
+                       f"skipped={queue_info['skipped']}")
+        if queue_info['ready'] > 0:
+            app_logger.info(f"Next: {queue_info['ready']} task(s) ready to execute")
+        elif queue_info['blocked'] > 0 and queue_info['skipped'] == 0:
+            app_logger.warning("All pending tasks are blocked by dependencies!")
+        elif queue_info['total'] == 0:
+            app_logger.info("No tasks in queue")
 
         # 主循环
         iteration = 0
@@ -839,6 +950,7 @@ class AutomationEngine:
 
             if task_info is None:
                 app_logger.success("All tasks completed. No pending stages.")
+                self._print_run_summary()
                 return 0
 
             task_id = task_info["task_id"]
@@ -896,6 +1008,7 @@ class AutomationEngine:
                         if self.storage.is_all_stages_complete(task_id):
                             self.storage.complete_task(task_id)
                             self.storage.clear_cache()
+                            self.stats["tasks_completed"] += 1
                             app_logger.success(f"Task FULLY COMPLETE: {task_id}")
                     else:
                         # 回滚已完成，结算为失败
@@ -957,6 +1070,7 @@ class AutomationEngine:
                 if self.storage.is_all_stages_complete(task_id):
                     self.storage.complete_task(task_id)
                     self.storage.clear_cache()
+                    self.stats["tasks_completed"] += 1
                     app_logger.success(
                         f"Task FULLY COMPLETE: {task_id}"
                     )
@@ -1012,6 +1126,7 @@ Examples:
 
     except KeyboardInterrupt:
         app_logger.info("Interrupted by user")
+        engine._print_run_summary()
         sys.exit(0)
 
     except Exception as e:

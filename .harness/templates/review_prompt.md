@@ -112,27 +112,36 @@ python3 .harness/scripts/harness-tools.py --action mark-stage --id {TASK_ID} --s
 
 ### 步骤 2: 安全性审查
 
-#### 输入验证
-- [ ] 所有用户输入都经过验证
+#### 2.1 输入验证
+- [ ] 所有用户输入都经过 Validate 验证器验证
 - [ ] FormRequest 验证规则完整
 - [ ] 数据类型转换正确
+- [ ] LIKE 查询中的 `%` 和 `_` 已转义
 
-#### 输出编码
-- [ ] API 响应使用 Resources
-- [ ] 敏感字段已隐藏（password, token）
+#### 2.2 敏感数据保护
+- [ ] **Model 已定义 `$hidden` 属性**，至少隐藏 `password`、`last_login_ip`
+- [ ] API 响应中不包含密码哈希、Token、密钥等敏感信息
+- [ ] **`$fillable` 不包含特权字段**（`status`、`last_login_at`、`last_login_ip`），这些字段只能在 Service 内部赋值
 - [ ] JSON 编码正确
 
-#### 权限控制
-- [ ] 认证检查正确
-- [ ] 授权检查完整
-- [ ] 资源所有权验证
+#### 2.3 认证与授权
+- [ ] **路由组已挂载认证中间件**（`->middleware(AuthMiddleware::class)`）
+- [ ] 非公开接口的 `user_id` 从 JWT Token 中获取，而非 `request->param('user_id')`
+- [ ] 资源所有权验证（用户只能操作自己的数据）
+- [ ] Admin 端和 App 端的路由组分别挂载对应的中间件
 
-#### 数据库安全
+#### 2.4 数据库安全
 - [ ] 使用参数绑定（防 SQL 注入）
 - [ ] 外键约束正确
-- [ ] 敏感数据加密
+- [ ] 敏感数据加密（密码使用 `password_hash`）
 
-#### 其他安全
+#### 2.5 事务安全 ⚠️⚠️⚠️
+- [ ] **涉及 ≥2 个写操作的方法已用 `Db::startTrans()` 包裹**
+- [ ] **无 TOCTOU 竞态条件**：先检查状态再执行操作的模式（check-then-act）必须在同一事务内完成
+- [ ] 事务异常时正确 `Db::rollback()`
+- [ ] 不存在"事务由上层控制"这种推诿（每个方法自己负责自己的事务边界）
+
+#### 2.6 其他安全
 - [ ] 无 XSS 风险
 - [ ] 无 CSRF 风险
 - [ ] 无硬编码密钥
@@ -220,11 +229,13 @@ python3 .harness/scripts/harness-tools.py --action mark-stage --id {TASK_ID} --s
 - **如果没有看到此输出**：说明命令未执行，请重新执行！
 - **不要只是说"已完成"**：必须实际执行命令！
 
-**严重问题定义**：
-- 安全漏洞
+**严重问题定义**（发现任何一项必须标记失败）：
+- **致命安全漏洞**：SQL 注入、认证缺失、敏感数据泄露
+- **致命正确性问题**：跨层调用参数不匹配、调用了不存在的方法
+- **事务安全缺陷**：多步写操作无事务包裹、TOCTOU 竞态条件
+- **模型安全缺陷**：缺少 `$hidden` 导致密码暴露、`$fillable` 含特权字段
 - 严重性能问题
 - 违反核心规范
-- 可维护性极差
 
 ---
 
@@ -274,10 +285,14 @@ python3 .harness/scripts/harness-tools.py --action mark-stage --id {TASK_ID} --s
 - [ ] 命名规范正确
 
 ### 安全性
-- [ ] 无明显安全漏洞
+- [ ] Model 已定义 `$hidden` 隐藏 password、last_login_ip 等敏感字段
+- [ ] `$fillable` 不含 status、last_login_at、last_login_ip 等特权字段
+- [ ] 路由组已挂载认证中间件
+- [ ] `user_id` 从 Token 获取，非请求参数
 - [ ] 输入验证完整
 - [ ] 输出编码正确
-- [ ] 权限控制完整
+- [ ] 无 TOCTOU 竞态条件
+- [ ] 多步写操作已用事务包裹
 
 ### 性能
 - [ ] 无明显性能问题
@@ -304,18 +319,21 @@ python3 .harness/scripts/harness-tools.py --action mark-stage --id {TASK_ID} --s
 ```
 开始 Review
     ↓
-是否有严重安全漏洞？
+是否有致命正确性问题？（参数不匹配、调用了不存在的方法）
     YES → 标记失败，要求修复
     NO  ↓
-    ↓
+是否有致命安全漏洞？（SQL注入、认证缺失、密码暴露、特权字段可赋值）
+    YES → 标记失败，要求修复
+    NO  ↓
+是否有事务安全缺陷？（多步写操作无事务、TOCTOU竞态）
+    YES → 标记失败，要求修复
+    NO  ↓
 是否有严重性能问题？
     YES → 标记失败，要求修复
     NO  ↓
-    ↓
 是否违反核心规范？
     YES → 标记失败，要求修复
     NO  ↓
-    ↓
 代码质量是否可接受？
     YES → 标记通过，可以发布
     NO  → 标记失败，要求改进
