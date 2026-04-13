@@ -254,10 +254,7 @@ class AutomationEngine:
 
         # 0. 系统目录上下文（确保 Agent 知道在哪里写代码）
         parts.append(
-            "# [SYSTEM DIRECTORY CONTEXT]\n\n"
-            f"Your current working directory for writing business code is: `{PROJECT_ROOT}`\n\n"
-            f"The Automation Engine and Requirement Documents are located at: `{HARNESS_DIR}`\n\n"
-            "(Use absolute paths if you need to read PRD documents from the Engine directory.)"
+            f"# [SYSTEM DIRECTORY CONTEXT]\nBusiness code dir: `{PROJECT_ROOT}` | Engine & PRD dir: `{HARNESS_DIR}`"
         )
 
         # 0.5. 项目全局约定（仅 dev 阶段注入，test/review 不需要）
