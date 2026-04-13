@@ -260,10 +260,11 @@ class AutomationEngine:
             "(Use absolute paths if you need to read PRD documents from the Engine directory.)"
         )
 
-        # 0.5. 项目全局约定
-        project_cfg_text = format_project_config_for_prompt(get_project_config())
-        if project_cfg_text:
-            parts.append(project_cfg_text)
+        # 0.5. 项目全局约定（仅 dev 阶段注入，test/review 不需要）
+        if stage == "dev":
+            project_cfg_text = format_project_config_for_prompt(get_project_config())
+            if project_cfg_text:
+                parts.append(project_cfg_text)
 
         # 1. CLAUDE.md
         claude_md = PROJECT_ROOT / "CLAUDE.md"
