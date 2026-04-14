@@ -314,10 +314,10 @@ def get_timeout_for_stage(stage: str, retry_count: int = 0) -> int:
         超时时间（秒）
     """
     stage_multipliers = {
-        "dev": 4.0,           # Dev 阶段最长
-        "test": 3.0,
-        "review": 2.0,
-        "validation": 1.5
+        "dev": 2.0,           # Dev 阶段最长
+        "test": 1.5,
+        "review": 1.2,
+        "validation": 1.0
     }
 
     base = BASE_SILENCE_TIMEOUT
